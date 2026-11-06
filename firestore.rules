@@ -32,6 +32,51 @@ service cloud.firestore {
         && request.resource.data.updatedAt is string;
     }
 
+    function isSignedInGoogleGmail() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.email.matches('^[^@]+@gmail[.]com$');
+    }
+
+    function isCircleMember(circleId) {
+      return isSignedInGoogleGmail()
+        && exists(/databases/$(database)/documents/challenges/$(circleId)/members/$(request.auth.uid));
+    }
+
+    function validCircleMember(circleId, memberId) {
+      return isSignedInGoogleGmail()
+        && request.auth.uid == memberId
+        && request.resource.data.keys().hasOnly([
+          'displayName', 'inviteCode', 'joinedAt'
+        ])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.inviteCode is string
+        && request.resource.data.joinedAt is string
+        && existsAfter(/databases/$(database)/documents/challengeInvites/$(request.resource.data.inviteCode))
+        && getAfter(/databases/$(database)/documents/challengeInvites/$(request.resource.data.inviteCode)).data.challengeId == circleId;
+    }
+
+    function validCircleSummary(circleId, memberId, monthId) {
+      return isSignedInGoogleGmail()
+        && request.auth.uid == memberId
+        && request.resource.data.keys().hasOnly(['displayName', 'month', 'budget', 'spent', 'updatedAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.month == monthId
+        && monthId.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && request.resource.data.budget is number
+        && request.resource.data.budget >= 0
+        && request.resource.data.spent is number
+        && request.resource.data.spent >= 0
+        && request.resource.data.updatedAt is string
+        && existsAfter(/databases/$(database)/documents/challenges/$(circleId)/members/$(memberId));
+    }
+
     match /users/{userId} {
       allow read, create, update, delete: if isGoogleOwner(userId);
 
@@ -43,6 +88,56 @@ service cloud.firestore {
       match /budgets/{monthId} {
         allow read, delete: if isGoogleOwner(userId);
         allow create, update: if isGoogleOwner(userId) && validBudget();
+      }
+
+      match /challenges/{circleId} {
+        allow read: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && request.resource.data.keys().hasOnly(['name', 'inviteCode', 'joinedAt'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 40
+          && request.resource.data.inviteCode is string
+          && request.resource.data.joinedAt is string;
+        allow delete: if isGoogleOwner(userId);
+      }
+    }
+
+    match /challengeInvites/{inviteCode} {
+      allow get: if isSignedInGoogleGmail();
+      allow list: if false;
+      allow create: if isSignedInGoogleGmail()
+        && request.resource.data.keys().hasOnly(['challengeId', 'name', 'createdBy'])
+        && request.resource.data.challengeId is string
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.createdBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/challenges/$(request.resource.data.challengeId)).data.ownerId == request.auth.uid;
+      allow update, delete: if isSignedInGoogleGmail()
+        && resource.data.createdBy == request.auth.uid;
+    }
+
+    match /challenges/{circleId} {
+      allow create: if isSignedInGoogleGmail()
+        && request.resource.data.keys().hasOnly(['name', 'ownerId', 'createdAt'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 40
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.createdAt is string;
+      allow read: if isCircleMember(circleId);
+      allow update, delete: if isSignedInGoogleGmail() && resource.data.ownerId == request.auth.uid;
+
+      match /members/{memberId} {
+        allow read: if isCircleMember(circleId);
+        allow create: if validCircleMember(circleId, memberId);
+        allow update: if isCircleMember(circleId) && request.auth.uid == memberId && validCircleMember(circleId, memberId);
+        allow delete: if isCircleMember(circleId) && request.auth.uid == memberId;
+      }
+
+      match /months/{monthId}/members/{memberId} {
+        allow read: if isCircleMember(circleId);
+        allow create, update: if validCircleSummary(circleId, memberId, monthId);
+        allow delete: if isCircleMember(circleId) && request.auth.uid == memberId;
       }
     }
 

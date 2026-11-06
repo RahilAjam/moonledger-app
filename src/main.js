@@ -4,7 +4,7 @@ import {
   setPersistence, signInWithPopup, signInWithRedirect, signOut
 } from "firebase/auth";
 import {
-  addDoc, collection, doc, getFirestore, initializeFirestore,
+  addDoc, collection, doc, getDoc, getFirestore, initializeFirestore,
   onSnapshot, orderBy, persistentLocalCache, persistentMultipleTabManager, query,
   setDoc, writeBatch
 } from "firebase/firestore";
@@ -32,6 +32,10 @@ let currentView = "Overview";
 let accountGreeting = "Your money, in view.";
 let stopExpenses;
 let stopBudget;
+let stopChallenges;
+let stopChallengeMembers = [];
+let joinedChallenges = [];
+let challengeMemberData = [];
 let reminderEnabled = localStorage.getItem(reminderKey) !== "off";
 
 function getDatabase() {
@@ -53,6 +57,134 @@ function getDatabase() {
 function userCollection(name) {
   return collection(getDatabase(), "users", user.uid, name);
 }
+
+function currentMonthTotals() {
+  const [year, month] = (monthSelect.value || "").split("-").map(Number);
+  const spent = expenses.filter((entry) => {
+    const date = new Date(entry.date);
+    return date.getFullYear() === year && date.getMonth() + 1 === month;
+  }).reduce((sum, entry) => sum + Number(entry.amount), 0);
+  return { month: monthSelect.value, budget: Number(budgets[monthSelect.value] || 0), spent };
+}
+
+function challengeRef(id) { return doc(getDatabase(), "challenges", id); }
+function membershipRef(id, uid = user.uid) { return doc(getDatabase(), "challenges", id, "members", uid); }
+function memberRef(id, uid = user.uid, month = monthSelect.value) { return doc(getDatabase(), "challenges", id, "months", month, "members", uid); }
+function stopChallengeListeners() {
+  stopChallenges?.(); stopChallenges = null;
+  stopChallengeMembers.forEach((stop) => stop()); stopChallengeMembers = [];
+}
+
+function syncChallengeSummary() {
+  if (!user || !joinedChallenges.length) return;
+  const summary = currentMonthTotals();
+  joinedChallenges.forEach((challenge) => {
+    setDoc(memberRef(challenge.id, user.uid, summary.month), {
+      displayName: (user.displayName || user.email?.split("@")[0] || "Moonledger user").slice(0, 40),
+      month: summary.month, budget: summary.budget, spent: summary.spent,
+      updatedAt: new Date().toISOString()
+    }, { merge: true }).catch((error) => console.warn("Savings challenge summary did not sync.", error));
+  });
+}
+
+function watchChallenges() {
+  stopChallengeListeners();
+  if (!user) return;
+  stopChallenges = onSnapshot(userCollection("challenges"), async (snapshot) => {
+    joinedChallenges = await Promise.all(snapshot.docs.map(async (entry) => {
+      const metadata = entry.data();
+      const group = await getDoc(challengeRef(entry.id));
+      return group.exists() ? { id: entry.id, name: metadata.name || group.data().name || "Savings circle", inviteCode: metadata.inviteCode || "" } : null;
+    }));
+    joinedChallenges = joinedChallenges.filter(Boolean);
+    watchChallengeMembers();
+    syncChallengeSummary();
+    renderLeaderboard();
+  }, (error) => { $("challengeStatus").textContent = "Savings circles are unavailable: " + error.message; });
+}
+
+function watchChallengeMembers() {
+  stopChallengeMembers.forEach((stop) => stop()); stopChallengeMembers = [];
+  challengeMemberData = [];
+  if (!user || !joinedChallenges.length || !monthSelect.value) { renderLeaderboard(); return; }
+  joinedChallenges.forEach((challenge) => {
+    const stop = onSnapshot(collection(getDatabase(), "challenges", challenge.id, "months", monthSelect.value, "members"), (members) => {
+      const byId = new Map(challengeMemberData.filter((item) => item.challengeId !== challenge.id).map((item) => [item.challengeId + ":" + item.id, item]));
+      members.docs.forEach((entry) => byId.set(challenge.id + ":" + entry.id, { id: entry.id, challengeId: challenge.id, challengeName: challenge.name, ...entry.data() }));
+      challengeMemberData = Array.from(byId.values()); renderLeaderboard();
+    }, (error) => { console.warn("Savings circle could not load.", error); });
+    stopChallengeMembers.push(stop);
+  });
+}
+
+function renderLeaderboard() {
+  const container = $("leaderboard");
+  if (!container) return;
+  $("leaderPeriod").textContent = monthSelect.options[monthSelect.selectedIndex]?.text || "";
+  const inviteCode = joinedChallenges.find((entry) => entry.inviteCode)?.inviteCode;
+  const inviteLine = inviteCode ? '<div class="leader-invite">Your invite code <strong>' + escapeHtml(inviteCode) + '</strong> · share it with a friend</div>' : '';
+  const entries = challengeMemberData.filter((item) => item.month === monthSelect.value && Number(item.budget) > 0)
+    .map((item) => ({ ...item, saved: Number(item.budget) - Number(item.spent), rate: (Number(item.budget) - Number(item.spent)) / Number(item.budget) }))
+    .sort((a, b) => b.saved - a.saved);
+  if (!joinedChallenges.length) {
+    container.innerHTML = '<div class="leader-empty"><div><strong>Make saving a little more fun</strong><p>Start a private circle with friends. Compare how much of your budget each person keeps.</p></div></div>';
+  } else if (!entries.length) {
+    container.innerHTML = '<div class="leader-empty"><div><strong>Your circle is ready</strong><p>Set a budget for ' + escapeHtml(monthSelect.options[monthSelect.selectedIndex]?.text || "this month") + ' to appear on the leaderboard.</p></div></div>' + inviteLine;
+  } else {
+    const myRank = entries.findIndex((entry) => entry.id === user.uid) + 1;
+    container.innerHTML = '<div class="leader-heading"><div><strong>' + escapeHtml(joinedChallenges.map((item) => item.name).join(" · ")) + '</strong><p>Ranked by the amount left in each budget.</p></div><span class="leader-rank">' + (myRank ? "Your rank · #" + myRank : "Savings circle") + '</span></div>' +
+      entries.slice(0, 8).map((entry, index) => '<div class="leader-row"><span class="leader-place">' + (index === 0 ? "✦" : String(index + 1).padStart(2, "0")) + '</span><div class="leader-person"><strong>' + escapeHtml(entry.displayName || "Moonledger user") + (entry.id === user.uid ? ' <small>You</small>' : '') + '</strong><div class="leader-meter"><i style="width:' + Math.max(0, Math.min(100, entry.rate * 100)) + '%"></i></div></div><div class="leader-saved"><strong>' + money(entry.saved) + '</strong><small>' + Math.round(entry.rate * 100) + '% left</small></div></div>').join("") +
+      inviteLine +
+      '<div class="leader-privacy">Only your name, monthly budget, and total spending are shared with circle members. Individual expenses stay private.</div>';
+  }
+}
+
+function closeChallengeModals() {
+  $("challengeCreateModal").classList.remove("open");
+  $("challengeJoinModal").classList.remove("open");
+}
+
+$("challengeCreateForm").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!user) return;
+  const name = $("challengeName").value.trim().slice(0, 40) || "Savings circle";
+  const id = doc(collection(getDatabase(), "challenges")).id;
+  const inviteCode = crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+  const group = challengeRef(id);
+  const summary = currentMonthTotals();
+  const batch = writeBatch(getDatabase());
+  batch.set(group, { name, ownerId: user.uid, createdAt: new Date().toISOString() });
+  batch.set(doc(getDatabase(), "challengeInvites", inviteCode), { challengeId: id, name, createdBy: user.uid });
+  batch.set(membershipRef(id), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), inviteCode, joinedAt: new Date().toISOString() });
+  batch.set(memberRef(id, user.uid, summary.month), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), ...summary, updatedAt: new Date().toISOString() });
+  batch.set(doc(userCollection("challenges"), id), { name, inviteCode, joinedAt: new Date().toISOString() });
+  try {
+    await batch.commit(); closeChallengeModals(); event.target.reset();
+    $("challengeStatus").textContent = "Circle created. Share invite code " + inviteCode + " with friends.";
+  } catch (error) { $("challengeCreateError").textContent = "Could not create the circle: " + error.message; }
+};
+
+$("challengeJoinForm").onsubmit = async (event) => {
+  event.preventDefault();
+  if (!user) return;
+  const code = $("challengeCode").value.trim().toUpperCase();
+  try {
+    const invitation = await getDoc(doc(getDatabase(), "challengeInvites", code));
+    if (!invitation.exists()) { $("challengeJoinError").textContent = "That invite code wasn’t found. Check it and try again."; return; }
+    const details = invitation.data();
+    const batch = writeBatch(getDatabase());
+    const summary = currentMonthTotals();
+    batch.set(membershipRef(details.challengeId), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), inviteCode: code, joinedAt: new Date().toISOString() });
+    batch.set(memberRef(details.challengeId, user.uid, summary.month), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), ...summary, updatedAt: new Date().toISOString() });
+    batch.set(doc(userCollection("challenges"), details.challengeId), { name: details.name || "Savings circle", inviteCode: code, joinedAt: new Date().toISOString() });
+    await batch.commit(); closeChallengeModals(); event.target.reset();
+    $("challengeStatus").textContent = "You joined " + (details.name || "the savings circle") + ".";
+  } catch (error) { $("challengeJoinError").textContent = "Could not join the circle: " + error.message; }
+};
+$("cancelChallengeCreate").onclick = closeChallengeModals;
+$("cancelChallengeJoin").onclick = closeChallengeModals;
+$("createChallenge").onclick = () => $("challengeCreateModal").classList.add("open");
+$("joinChallenge").onclick = () => $("challengeJoinModal").classList.add("open");
 
 function showSignedOut() {
   gate.hidden = false;
@@ -78,6 +210,7 @@ function showSignedIn(signedInUser) {
   $("sideName").textContent = name + "’s space";
   $("avatar").textContent = name.charAt(0).toUpperCase();
   startSync();
+  watchChallenges();
   setView(currentView);
 }
 
@@ -102,6 +235,7 @@ $("googleSignIn").addEventListener("click", signIn);
 $("signOutBtn").addEventListener("click", async () => {
   stopExpenses?.();
   stopBudget?.();
+  stopChallengeListeners();
   await signOut(auth);
   showSignedOut();
 });
@@ -114,6 +248,7 @@ function startSync() {
   stopExpenses = onSnapshot(expensesQuery, (snapshot) => {
     expenses = snapshot.docs.map((entry) => Object.assign({ id: entry.id }, entry.data()));
     render();
+    syncChallengeSummary();
     $("cloudStatus").textContent = !navigator.onLine || snapshot.metadata.fromCache
       ? "Offline mode · changes will sync when you reconnect."
       : "Synced to your private account.";
@@ -129,6 +264,7 @@ function watchBudget(month) {
   stopBudget = onSnapshot(doc(userCollection("budgets"), month), (snapshot) => {
     budgets[month] = snapshot.exists() ? Number(snapshot.data().amount || 0) : 0;
     updateBudget();
+    syncChallengeSummary(); renderLeaderboard();
   }, (error) => { $("cloudStatus").textContent = "Couldn’t load budget: " + error.message; });
 }
 
@@ -174,7 +310,7 @@ function renderContent() {
     : '<div class="empty">Your category breakdown will show up here.</div>';
 }
 
-function render() { renderContent(); updateBudget(); }
+function render() { renderContent(); updateBudget(); syncChallengeSummary(); renderLeaderboard(); }
 function updateBudget() {
   if (!monthSelect.value) return;
   const month = monthSelect.value;
@@ -185,6 +321,7 @@ function updateBudget() {
     return date.getFullYear() === parts[0] && date.getMonth() + 1 === parts[1];
   }).reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("budgetCaption").textContent = new Date(parts[0], parts[1] - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  $("leaderPeriod").textContent = $("budgetCaption").textContent;
   if (!budget) {
     $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = ""; return;
   }
@@ -202,7 +339,7 @@ function closeExpenseModal() { $("modal").classList.remove("open"); }
 $("addBtn").onclick = openExpenseModal;
 $("cancelBtn").onclick = closeExpenseModal;
 $("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
-monthSelect.onchange = () => { watchBudget(monthSelect.value); render(); };
+  monthSelect.onchange = () => { watchBudget(monthSelect.value); watchChallengeMembers(); render(); };
 document.querySelectorAll("[data-method]").forEach((button) => button.onclick = () => {
   method = button.dataset.method;
   document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice === button));
@@ -335,6 +472,7 @@ function setView(view) {
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
   $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Recent expenses";
+  $("leaderboardCard").hidden = !isOverview && !isReports;
   $("allBtn").hidden = isReports || isAccount;
   showAll = isExpenses;
   $("allBtn").textContent = isExpenses ? "Show recent" : "See all";
@@ -371,7 +509,7 @@ onAuthStateChanged(auth, (signedInUser) => {
   const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
   if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser);
   else {
-    user = null; stopExpenses?.(); stopBudget?.(); showSignedOut();
+    user = null; stopExpenses?.(); stopBudget?.(); stopChallengeListeners(); showSignedOut();
     if (signedInUser) {
       signOut(auth).catch(() => {});
       $("authError").textContent = "Moonledger needs a verified @gmail.com account. Sign in with Gmail to continue.";
