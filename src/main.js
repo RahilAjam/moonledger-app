@@ -268,14 +268,59 @@ function watchBudget(month) {
   }, (error) => { $("cloudStatus").textContent = "Couldn’t load budget: " + error.message; });
 }
 
-const icons = { "Food & drink": "☕", Travel: "↗", Shopping: "◇", Bills: "⌂", Health: "✚", Home: "⌂", Entertainment: "♫", Other: "·" };
+const icons = { "Food & drink": "☕", "Food delivery": "🥡", Groceries: "🛒", Commute: "↗", Rent: "⌂", Subscriptions: "▣", "Going out": "✦", Travel: "↗", Shopping: "◇", Bills: "⌂", Health: "✚", Home: "⌂", Entertainment: "♫", Other: "·" };
 const money = (amount) => "₹" + Number(amount || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 }
 
+function renderQuickAdds() {
+  const container = $("quickAddList");
+  if (!container) return;
+  const cutoff = Date.now() - 90 * 86400000;
+  const grouped = new Map();
+  expenses.filter((entry) => entry.note && Number(entry.amount) > 0 && new Date(entry.date).getTime() >= cutoff).forEach((entry) => {
+    const key = [entry.note.trim().toLowerCase(), Number(entry.amount), entry.category, entry.method].join("|");
+    const item = grouped.get(key) || { ...entry, count: 0, latest: 0 };
+    item.count += 1; item.latest = Math.max(item.latest, new Date(entry.date).getTime());
+    grouped.set(key, item);
+  });
+  const common = Array.from(grouped.values()).sort((a, b) => b.count - a.count || b.latest - a.latest).slice(0, 3);
+  container.replaceChildren();
+  $("quickAdds").hidden = common.length === 0;
+  common.forEach((entry) => {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "quick-add-chip";
+    button.textContent = entry.note + " · " + money(entry.amount);
+    button.title = "Prefill " + entry.note + " expense details";
+    button.onclick = () => {
+      $("amount").value = entry.amount; $("note").value = entry.note; $("category").value = entry.category;
+      method = entry.method || "UPI";
+      document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
+      openExpenseModal();
+    };
+    container.append(button);
+  });
+}
+
+function guessCategory(text) {
+  const value = text.toLowerCase();
+  if (/swiggy|zomato|food delivery|food order/.test(value)) return "Food delivery";
+  if (/blinkit|zepto|bigbasket|grocery|groceries|vegetable|supermarket/.test(value)) return "Groceries";
+  if (/rent|landlord/.test(value)) return "Rent";
+  if (/netflix|spotify|subscription|prime video|hotstar|gym/.test(value)) return "Subscriptions";
+  if (/auto|uber|ola|metro|bus|commute|fuel|petrol|cab/.test(value)) return "Commute";
+  if (/movie|cinema|cafe|pub|outing|date night/.test(value)) return "Going out";
+  if (/electricity|wifi|internet|phone bill|recharge|gas bill/.test(value)) return "Bills";
+  if (/doctor|medicine|pharmacy|clinic/.test(value)) return "Health";
+  if (/shopping|clothes|shoes/.test(value)) return "Shopping";
+  if (/chai|tea|coffee|lunch|dinner|breakfast|snack|restaurant|meal/.test(value)) return "Food & drink";
+  return "Other";
+}
+
 function renderContent() {
   if (!monthSelect.value) return;
+  renderQuickAdds();
   const parts = monthSelect.value.split("-").map(Number);
   const monthItems = expenses.filter((entry) => {
     const date = new Date(entry.date);
@@ -332,6 +377,17 @@ function updateBudget() {
   $("budgetFill").className = "budget-fill" + (ratio >= 1 ? " over" : ratio >= 0.8 ? " warn" : "");
   $("budgetStatus").textContent = ratio >= 1 ? "Over budget by " + money(spent - budget) : money(budget - spent) + " left · " + Math.round(ratio * 100) + "% used";
   $("budgetStatus").style.color = ratio >= 1 ? "#b86678" : "";
+  const now = new Date();
+  const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+  if (month === currentMonth) {
+    const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1;
+    const remaining = Math.max(0, budget - spent);
+    $("dailySafeAmount").textContent = money(Math.floor(remaining / Math.max(daysLeft, 1)));
+    $("dailySafeNote").textContent = remaining ? remaining + " left across " + daysLeft + (daysLeft === 1 ? " day" : " days") : "You’ve reached this month’s budget. Adjust it if your plans changed.";
+  } else {
+    $("dailySafeAmount").textContent = "—";
+    $("dailySafeNote").textContent = "Choose the current month to see a daily spending guide.";
+  }
 }
 
 function openExpenseModal() { $("modal").classList.add("open"); setTimeout(() => $("amount").focus(), 30); }
@@ -339,6 +395,21 @@ function closeExpenseModal() { $("modal").classList.remove("open"); }
 $("addBtn").onclick = openExpenseModal;
 $("cancelBtn").onclick = closeExpenseModal;
 $("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
+$("quickEntryForm").onsubmit = (event) => {
+  event.preventDefault();
+  const raw = $("quickEntryText").value.trim();
+  const match = raw.match(/(?:₹\s*)?(\d[\d,]*(?:\.\d{1,2})?)/);
+  if (!match) { $("quickEntryStatus").textContent = "Add an amount, like ‘250 Swiggy dinner’."; return; }
+  const amount = Number(match[1].replaceAll(",", ""));
+  const note = raw.replace(match[0], "").replace(/\b(?:for|on|at|paid|rs\.?|rupees)\b/gi, " ").replace(/\s+/g, " ").trim();
+  $("amount").value = amount;
+  $("note").value = note.slice(0, 80);
+  $("category").value = guessCategory(raw);
+  method = /\bcash\b/i.test(raw) ? "Cash" : /\bcard\b/i.test(raw) ? "Card" : "UPI";
+  document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
+  $("quickEntryStatus").textContent = "Filled a draft — check the details, then save.";
+  openExpenseModal();
+};
   monthSelect.onchange = () => { watchBudget(monthSelect.value); watchChallengeMembers(); render(); };
 document.querySelectorAll("[data-method]").forEach((button) => button.onclick = () => {
   method = button.dataset.method;
@@ -391,7 +462,7 @@ $("backupFile").onchange = async (event) => {
     if (backup.format !== "moonledger-backup-v1" || !Array.isArray(backup.expenses) || typeof backup.budgets !== "object") {
       throw new Error("This file is not a Moonledger backup.");
     }
-    const validCategories = ["Food & drink", "Travel", "Shopping", "Bills", "Health", "Home", "Entertainment", "Other"];
+    const validCategories = ["Food & drink", "Food delivery", "Groceries", "Commute", "Rent", "Subscriptions", "Going out", "Travel", "Shopping", "Bills", "Health", "Home", "Entertainment", "Other"];
     const validMethods = ["UPI", "Cash", "Card"];
     const records = backup.expenses.map((entry, index) => {
       const amount = Number(entry.amount);

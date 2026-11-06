@@ -25,6 +25,10 @@ Offline persistence is optional and is enabled only when the user checks the tru
 
 The app does not read UPI notifications. Users enter UPI, cash, and card expenses in the form. The evening reminder runs while the page is open.
 
+## Quick capture
+
+The dashboard accepts short descriptions such as `250 Swiggy dinner` and fills a draft amount, note, payment method, and best-guess category for the user to review before saving. Frequent-spend buttons are generated from that account’s own recent entries. The daily spending guide divides the current month’s remaining budget by the number of days left; it is a planning aid, not a guarantee of affordability.
+
 ## Optional website ads (currently off)
 
 Moonledger includes a public budgeting guide at `/learn.html` and a privacy page at `/privacy.html`. An ad slot is reserved only on the public guide; ad code is not included on the signed-in dashboard or around expense data. Advertising is disabled by default in `public/ads-config.js`, so the site makes no ad-network request while it remains off.
