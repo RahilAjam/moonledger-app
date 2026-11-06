@@ -25,6 +25,12 @@ Offline persistence is optional and is enabled only when the user checks the tru
 
 The app does not read UPI notifications. Users enter UPI, cash, and card expenses in the form. The evening reminder runs while the page is open.
 
+## Optional website ads (currently off)
+
+Moonledger includes a public budgeting guide at `/learn.html` and a privacy page at `/privacy.html`. An ad slot is reserved only on the public guide; ad code is not included on the signed-in dashboard or around expense data. Advertising is disabled by default in `public/ads-config.js`, so the site makes no ad-network request while it remains off.
+
+If you later meet Google AdSense requirements and Google approves the site, create an ad unit and enter the publisher ID (`ca-pub-...`) and ad unit slot ID in `public/ads-config.js`, then set `enabled: true`, rebuild, and deploy. Update the privacy and consent experience to match the ad products, audience locations, and current Google requirements before enabling ads. There is no automatic unlock at 1,000 users; approval depends on the site, account, and policy review, and earnings are not guaranteed.
+
 ## Older prototype entries
 
 The earlier prototype stores records in browser-only storage. In that prototype, click **Download a backup** at the bottom of the page. In this app, sign in to the intended Gmail account and choose **Import an older backup** at the bottom. The app previews the counts and asks before uploading records to that account.
