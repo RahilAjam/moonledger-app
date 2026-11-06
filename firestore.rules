@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isGoogleOwner(userId) {
+      return request.auth != null
+        && request.auth.uid == userId
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.email.matches('^[^@]+@gmail[.]com$');
+    }
+
+    function validExpense() {
+      return request.resource.data.keys().hasOnly([
+          'amount', 'method', 'category', 'note', 'date', 'importedFromPrototype'
+        ])
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.method in ['UPI', 'Cash', 'Card']
+        && request.resource.data.category in [
+          'Food & drink', 'Travel', 'Shopping', 'Bills', 'Health', 'Home', 'Entertainment', 'Other'
+        ]
+        && request.resource.data.note is string
+        && request.resource.data.note.size() <= 80
+        && request.resource.data.date is string;
+    }
+
+    function validBudget() {
+      return request.resource.data.keys().hasOnly(['amount', 'updatedAt'])
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.updatedAt is string;
+    }
+
+    match /users/{userId} {
+      allow read, create, update, delete: if isGoogleOwner(userId);
+
+      match /expenses/{expenseId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId) && validExpense();
+      }
+
+      match /budgets/{monthId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId) && validBudget();
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

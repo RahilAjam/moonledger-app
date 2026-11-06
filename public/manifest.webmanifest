@@ -1,0 +1,11 @@
+{
+  "name": "Moonledger",
+  "short_name": "Moonledger",
+  "description": "A calm, private view of your spending.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f6fb",
+  "theme_color": "#f7f6fb",
+  "icons": [{ "src": "/moon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
