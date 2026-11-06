@@ -11,9 +11,9 @@ Open this `moonledger-app` folder in VS Code. Install Node.js, then open VS Code
 1. Confirm `src/firebase-config.js` matches **Firebase Console → Project settings → Your apps → SDK setup and configuration**. These values are browser configuration, not a service-account secret. Never put a service-account JSON file or private key in this project or GitHub.
 2. In **Authentication → Sign-in method**, enable Google and keep other providers disabled. The app and Firestore rules accept verified `@gmail.com` accounts.
 3. In **Authentication → Settings → Authorized domains**, add `moonledger-2b6fb.web.app` and `localhost` if they are not already listed.
-4. Build and deploy with the Firebase CLI from this folder: `npm run build`, `firebase deploy`.
+4. Build and deploy the website and Firestore rules from this folder: `npm run build`, then `firebase deploy --only hosting,firestore:rules`.
 
-To publish, run `npm run build`, then `npx firebase-tools login` the first time and `npx firebase-tools deploy`. This publishes the built site and the Firestore rules in this folder. Each signed-in Google user can access only `users/{their-uid}/...`. Review the rules before changing them.
+Log in with `npx firebase-tools login` the first time. The Hosting and rules command does not deploy the optional scheduled notification function. Each signed-in Google user can access only `users/{their-uid}/...`; circle-shared costs are visible only to that circle. Review the rules before changing them.
 
 ## GitHub
 

@@ -46,6 +46,23 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/challenges/$(circleId)/members/$(request.auth.uid));
     }
 
+    function inviteRateLimitAdvanced() {
+      let path = /databases/$(database)/documents/users/$(request.auth.uid)/inviteRateLimits/circles;
+      return existsAfter(path)
+        && getAfter(path).data.updatedAt == request.time
+        && getAfter(path).data.count is int
+        && getAfter(path).data.count > 0
+        && getAfter(path).data.count <= 10
+        && (exists(path)
+          ? ((request.time < get(path).data.windowStartedAt + duration.value(24, 'h')
+              && getAfter(path).data.count == get(path).data.count + 1
+              && getAfter(path).data.windowStartedAt == get(path).data.windowStartedAt)
+            || (request.time >= get(path).data.windowStartedAt + duration.value(24, 'h')
+              && getAfter(path).data.count == 1
+              && getAfter(path).data.windowStartedAt == request.time))
+          : getAfter(path).data.count == 1 && getAfter(path).data.windowStartedAt == request.time);
+    }
+
     function validCircleMember(circleId, memberId) {
       return isSignedInGoogleGmail()
         && request.auth.uid == memberId
@@ -101,6 +118,82 @@ service cloud.firestore {
           && request.resource.data.joinedAt is string;
         allow delete: if isGoogleOwner(userId);
       }
+
+      match /recurring/{itemId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && request.resource.data.keys().hasOnly(['name', 'amount', 'dueDay', 'kind', 'enabled', 'lastReminderKey'])
+          && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 50
+          && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
+          && request.resource.data.dueDay is int && request.resource.data.dueDay >= 1 && request.resource.data.dueDay <= 31
+          && request.resource.data.kind in ['bill', 'subscription']
+          && request.resource.data.enabled is bool
+          && (!('lastReminderKey' in request.resource.data) || request.resource.data.lastReminderKey is string);
+      }
+
+      match /debts/{debtId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && request.resource.data.keys().hasOnly(['person', 'amount', 'note', 'direction', 'settled', 'createdAt', 'splitId'])
+          && request.resource.data.person is string && request.resource.data.person.size() > 0 && request.resource.data.person.size() <= 50
+          && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
+          && request.resource.data.note is string && request.resource.data.note.size() <= 80
+          && request.resource.data.direction in ['owed-to-me', 'i-owe']
+          && request.resource.data.settled is bool
+          && request.resource.data.createdAt is string
+          && (!('splitId' in request.resource.data) || (request.resource.data.splitId is string && request.resource.data.splitId.size() <= 100));
+      }
+
+      match /noSpendDays/{dayId} {
+        allow read: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && request.resource.data.keys().hasOnly(['date'])
+          && request.resource.data.date == dayId
+          && dayId.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+        allow update: if false;
+        allow delete: if isGoogleOwner(userId);
+      }
+
+      match /notificationTokens/{tokenId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && request.resource.data.keys().hasOnly(['token', 'userId', 'timezone', 'eveningEnabled', 'lastEveningDate', 'updatedAt'])
+          && request.resource.data.token is string && request.resource.data.token.size() > 0 && request.resource.data.token.size() <= 4096
+          && request.resource.data.userId == userId
+          && request.resource.data.timezone is string && request.resource.data.timezone.size() <= 80
+          && request.resource.data.eveningEnabled is bool
+          && request.resource.data.lastEveningDate is string
+          && request.resource.data.updatedAt is string;
+      }
+
+      match /inviteRateLimits/{limitId} {
+        allow read: if isGoogleOwner(userId);
+        allow create: if isGoogleOwner(userId) && limitId == 'circles'
+          && request.resource.data.keys().hasOnly(['count', 'windowStartedAt', 'updatedAt'])
+          && request.resource.data.count == 1
+          && request.resource.data.windowStartedAt == request.time
+          && request.resource.data.updatedAt == request.time;
+        allow update: if isGoogleOwner(userId) && limitId == 'circles'
+          && request.resource.data.keys().hasOnly(['count', 'windowStartedAt', 'updatedAt'])
+          && request.resource.data.updatedAt == request.time
+          && ((request.time < resource.data.windowStartedAt + duration.value(24, 'h')
+              && request.resource.data.count == resource.data.count + 1
+              && request.resource.data.windowStartedAt == resource.data.windowStartedAt
+              && request.resource.data.count <= 10)
+            || (request.time >= resource.data.windowStartedAt + duration.value(24, 'h')
+              && request.resource.data.count == 1
+              && request.resource.data.windowStartedAt == request.time));
+        allow delete: if false;
+      }
+
+      match /challengeProgress/{progressId} {
+        allow read, delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId) && progressId == 'no-spend-7'
+          && request.resource.data.keys().hasOnly(['type', 'startDate'])
+          && request.resource.data.type == 'no-spend-7'
+          && request.resource.data.startDate is string
+          && request.resource.data.startDate.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
+      }
     }
 
     match /challengeInvites/{inviteCode} {
@@ -112,6 +205,8 @@ service cloud.firestore {
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 40
         && request.resource.data.createdBy == request.auth.uid
+        && inviteRateLimitAdvanced()
+        && inviteCode.matches('^[A-F0-9]{32}$')
         && getAfter(/databases/$(database)/documents/challenges/$(request.resource.data.challengeId)).data.ownerId == request.auth.uid;
       allow update, delete: if isSignedInGoogleGmail()
         && resource.data.createdBy == request.auth.uid;
@@ -139,6 +234,20 @@ service cloud.firestore {
         allow read: if isCircleMember(circleId);
         allow create, update: if validCircleSummary(circleId, memberId, monthId);
         allow delete: if isCircleMember(circleId) && request.auth.uid == memberId;
+      }
+
+      match /splits/{splitId} {
+        allow read: if isCircleMember(circleId);
+        allow create: if isCircleMember(circleId)
+          && request.resource.data.keys().hasOnly(['title', 'total', 'participantCount', 'createdBy', 'createdByName', 'createdAt'])
+          && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 60
+          && request.resource.data.total is number && request.resource.data.total > 0 && request.resource.data.total <= 100000000
+          && request.resource.data.participantCount is int && request.resource.data.participantCount >= 2 && request.resource.data.participantCount <= 20
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdByName is string && request.resource.data.createdByName.size() <= 40
+          && request.resource.data.createdAt is string;
+        allow update: if false;
+        allow delete: if isCircleMember(circleId) && resource.data.createdBy == request.auth.uid;
       }
     }
 

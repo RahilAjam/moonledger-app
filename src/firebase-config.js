@@ -9,5 +9,7 @@ export const firebaseConfig = {
   storageBucket: "moonledger-2b6fb.firebasestorage.app",
   messagingSenderId: "456255922118",
   appId: "1:456255922118:web:9c35a8186868f34c851cc7",
-  measurementId: "G-BYT523SHN1"
+  measurementId: "G-BYT523SHN1",
+  // Paste the public Web Push certificate key from Firebase Console > Project settings > Cloud Messaging.
+  vapidKey: ""
 };
