@@ -4,9 +4,9 @@ import {
   setPersistence, signInWithPopup, signInWithRedirect, signOut
 } from "firebase/auth";
 import {
-  addDoc, collection, doc, getDoc, getFirestore, initializeFirestore,
+  addDoc, collection, deleteDoc, doc, getDoc, getFirestore, initializeFirestore,
   onSnapshot, orderBy, persistentLocalCache, persistentMultipleTabManager, query,
-  setDoc, writeBatch
+  setDoc, updateDoc, writeBatch
 } from "firebase/firestore";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -18,12 +18,15 @@ const $ = (id) => document.getElementById(id);
 const themeKey = "moonledger-theme-v1";
 const reminderKey = "moonledger-reminder-v1";
 const remindedKey = "moonledger-last-reminder-v1";
+const guestDataKey = "moonledger-guest-data-v1";
 const gate = $("authGate");
 const shell = $("appShell");
 const mobileNav = document.querySelector(".mobile-nav");
 const monthSelect = $("monthSelect");
 let db;
 let user = null;
+let guestMode = false;
+let editingExpenseId = null;
 let expenses = [];
 let budgets = {};
 let method = "UPI";
@@ -56,6 +59,113 @@ function getDatabase() {
 
 function userCollection(name) {
   return collection(getDatabase(), "users", user.uid, name);
+}
+
+function readGuestData() {
+  try {
+    const data = JSON.parse(localStorage.getItem(guestDataKey) || "{}");
+    return {
+      expenses: Array.isArray(data.expenses) ? data.expenses : [],
+      budgets: data.budgets && typeof data.budgets === "object" ? data.budgets : {},
+      syncedExpenseIds: Array.isArray(data.syncedExpenseIds) ? data.syncedExpenseIds : [],
+      uploadedExpenseIds: Array.isArray(data.uploadedExpenseIds) ? data.uploadedExpenseIds : [],
+      deletedExpenseIds: Array.isArray(data.deletedExpenseIds) ? data.deletedExpenseIds : [],
+      syncedBudgetMonths: Array.isArray(data.syncedBudgetMonths) ? data.syncedBudgetMonths : [],
+      overwriteBudgetMonths: Array.isArray(data.overwriteBudgetMonths) ? data.overwriteBudgetMonths : []
+    };
+  } catch { return { expenses: [], budgets: {}, syncedExpenseIds: [], uploadedExpenseIds: [], deletedExpenseIds: [], syncedBudgetMonths: [], overwriteBudgetMonths: [] }; }
+}
+
+function writeGuestData(data) { localStorage.setItem(guestDataKey, JSON.stringify(data)); }
+function saveGuestExpenses() {
+  const data = readGuestData(); data.expenses = expenses; writeGuestData(data);
+}
+function setGuestMode() {
+  guestMode = true; user = null; expenses = readGuestData().expenses; budgets = readGuestData().budgets;
+  joinedChallenges = []; challengeMemberData = []; stopChallengeListeners();
+  gate.hidden = true; shell.hidden = false; mobileNav.hidden = false; $("signOutBtn").hidden = false;
+  $("signOutBtn").textContent = "Exit guest";
+  $("accountEmail").textContent = "Guest · this device";
+  $("accountEmail").title = "Guest data is stored only in this browser";
+  $("greeting").textContent = "Your money, in view.";
+  $("accountName").textContent = "Guest space"; $("accountEmailDetail").textContent = "Stored on this device only";
+  $("sideName").textContent = "Guest space"; $("avatar").textContent = "G"; $("accountAvatar").textContent = "G";
+  $("guestBanner").hidden = false; $("leaderboardCard").hidden = true;
+  $("cloudStatus").textContent = "Guest mode · entries stay in this browser until you choose to sync.";
+  render(); watchBudget(monthSelect.value); setView(currentView);
+}
+
+function pendingGuestData() {
+  const data = readGuestData();
+  return {
+    data,
+    expenses: data.expenses.filter((entry) => !data.syncedExpenseIds.includes(entry.id)),
+    deletions: data.deletedExpenseIds,
+    budgets: Object.entries(data.budgets).filter(([month]) => !data.syncedBudgetMonths.includes(month))
+  };
+}
+
+function updateGuestImportPanel() {
+  const pending = pendingGuestData();
+  const hasPending = pending.expenses.length > 0 || pending.budgets.length > 0 || pending.deletions.length > 0;
+  $("guestImportPanel").hidden = !user || !hasPending;
+  $("guestImportDetail").textContent = pending.expenses.length + " expense" + (pending.expenses.length === 1 ? "" : "s") + ", " + pending.deletions.length + " deletion" + (pending.deletions.length === 1 ? "" : "s") + " and " + pending.budgets.length + " budget" + (pending.budgets.length === 1 ? "" : "s") + " ready to sync from this device.";
+  return pending;
+}
+
+function openGuestImportModal() {
+  if (!user) return;
+  const pending = updateGuestImportPanel();
+  if (!pending.expenses.length && !pending.budgets.length && !pending.deletions.length) return;
+  $("guestImportSummary").textContent = "Sync " + pending.expenses.length + " guest expense" + (pending.expenses.length === 1 ? "" : "s") + ", " + pending.deletions.length + " deletion" + (pending.deletions.length === 1 ? "" : "s") + " and " + pending.budgets.length + " budget" + (pending.budgets.length === 1 ? "" : "s") + " into " + (user.email || "your Google account") + "?";
+  $("guestImportModal").classList.add("open");
+}
+
+async function syncGuestData() {
+  if (!user) return;
+  const pending = pendingGuestData();
+  const data = pending.data;
+  try {
+    if (data.deletedExpenseIds.length) {
+      const deleted = data.deletedExpenseIds.slice();
+      for (let start = 0; start < deleted.length; start += 400) {
+        const batch = writeBatch(getDatabase());
+        deleted.slice(start, start + 400).forEach((id) => batch.delete(doc(userCollection("expenses"), "guest_" + String(id).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100))));
+        await batch.commit();
+      }
+      data.deletedExpenseIds = [];
+      data.uploadedExpenseIds = data.uploadedExpenseIds.filter((id) => !deleted.includes(id));
+      data.syncedExpenseIds = data.syncedExpenseIds.filter((id) => !deleted.includes(id));
+    }
+    for (let start = 0; start < pending.expenses.length; start += 400) {
+      const batch = writeBatch(getDatabase());
+      pending.expenses.slice(start, start + 400).forEach((entry) => {
+        const safeId = String(entry.id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100);
+        const { amount, method: paymentMethod, category, note, date } = entry;
+        batch.set(doc(userCollection("expenses"), "guest_" + safeId), { amount: Number(amount), method: paymentMethod, category, note: String(note || "").slice(0, 80), date: new Date(date).toISOString() });
+      });
+      await batch.commit();
+    }
+    const importedIds = pending.expenses.map((entry) => entry.id).filter(Boolean);
+    for (const [month, amount] of pending.budgets) {
+      const budgetRef = doc(userCollection("budgets"), month);
+      const existing = await getDoc(budgetRef);
+      const overwrite = data.overwriteBudgetMonths.includes(month);
+      if (overwrite || !existing.exists()) {
+        await setDoc(budgetRef, { amount: Number(amount), updatedAt: new Date().toISOString() });
+      }
+    }
+    data.syncedExpenseIds = Array.from(new Set([...data.syncedExpenseIds, ...importedIds]));
+    data.uploadedExpenseIds = Array.from(new Set([...data.uploadedExpenseIds, ...importedIds]));
+    data.syncedBudgetMonths = Array.from(new Set([...data.syncedBudgetMonths, ...pending.budgets.map(([month]) => month)]));
+    data.overwriteBudgetMonths = data.overwriteBudgetMonths.filter((month) => !pending.budgets.some(([pendingMonth]) => pendingMonth === month));
+    writeGuestData(data);
+    $("guestImportModal").classList.remove("open");
+    updateGuestImportPanel();
+    $("cloudStatus").textContent = "Guest entries copied to your private account. A local copy remains on this device.";
+  } catch (error) {
+    $("guestImportSummary").textContent = "Could not sync those entries yet: " + error.message;
+  }
 }
 
 function currentMonthTotals() {
@@ -191,14 +301,19 @@ function showSignedOut() {
   shell.hidden = true;
   mobileNav.hidden = true;
   $("signOutBtn").hidden = true;
+  $("guestBanner").hidden = true;
+  guestMode = false;
 }
 
 function showSignedIn(signedInUser) {
   user = signedInUser;
+  guestMode = false;
   gate.hidden = true;
   shell.hidden = false;
   mobileNav.hidden = false;
   $("signOutBtn").hidden = false;
+  $("signOutBtn").textContent = "Sign out";
+  $("guestBanner").hidden = true;
   const name = (user.displayName || user.email?.split("@")[0] || "You").trim();
   $("accountEmail").textContent = user.email || "Google account";
   $("accountEmail").title = user.email || "Google account";
@@ -212,6 +327,9 @@ function showSignedIn(signedInUser) {
   startSync();
   watchChallenges();
   setView(currentView);
+  updateGuestImportPanel();
+  const guestPending = pendingGuestData();
+  if (guestPending.expenses.length || guestPending.budgets.length || guestPending.deletions.length) setTimeout(openGuestImportModal, 400);
 }
 
 async function signIn() {
@@ -232,7 +350,13 @@ async function signIn() {
 }
 
 $("googleSignIn").addEventListener("click", signIn);
+$("guestStart").addEventListener("click", setGuestMode);
+$("guestSignIn").addEventListener("click", signIn);
+$("importGuestData").addEventListener("click", openGuestImportModal);
+$("skipGuestSync").addEventListener("click", () => $("guestImportModal").classList.remove("open"));
+$("confirmGuestSync").addEventListener("click", syncGuestData);
 $("signOutBtn").addEventListener("click", async () => {
+  if (guestMode) { showSignedOut(); return; }
   stopExpenses?.();
   stopBudget?.();
   stopChallengeListeners();
@@ -259,6 +383,11 @@ function startSync() {
 
 function watchBudget(month) {
   stopBudget?.();
+  if (guestMode && month) {
+    budgets = readGuestData().budgets;
+    updateBudget();
+    return;
+  }
   budgets = {};
   if (!user || !month) return;
   stopBudget = onSnapshot(doc(userCollection("budgets"), month), (snapshot) => {
@@ -292,12 +421,20 @@ function renderQuickAdds() {
     const button = document.createElement("button");
     button.type = "button"; button.className = "quick-add-chip";
     button.textContent = entry.note + " · " + money(entry.amount);
-    button.title = "Prefill " + entry.note + " expense details";
-    button.onclick = () => {
-      $("amount").value = entry.amount; $("note").value = entry.note; $("category").value = entry.category;
-      method = entry.method || "UPI";
-      document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
-      openExpenseModal();
+    button.title = "Add " + entry.note + " expense with one tap";
+    button.setAttribute("aria-label", button.title + ", " + money(entry.amount));
+    button.onclick = async () => {
+      button.disabled = true;
+      const data = { amount: Number(entry.amount), method: entry.method || "UPI", category: entry.category || "Other", note: entry.note, date: dateFromInput(dateInputValue()) };
+      try {
+        if (guestMode) {
+          expenses = [{ id: "guest_" + (crypto.randomUUID?.() || Date.now() + "_" + Math.random().toString(36).slice(2)), ...data }, ...expenses];
+          saveGuestExpenses(); render();
+        } else if (user) await addDoc(userCollection("expenses"), data);
+        $("quickEntryStatus").textContent = "Added " + entry.note + " · " + money(entry.amount) + ".";
+      } catch (error) {
+        $("quickEntryStatus").textContent = "Could not add that spend: " + error.message;
+      } finally { button.disabled = false; }
     };
     container.append(button);
   });
@@ -318,7 +455,25 @@ function guessCategory(text) {
   return "Other";
 }
 
+function ensureExpenseMonthOptions(entries) {
+  const known = new Set(Array.from(monthSelect.options, (option) => option.value));
+  entries.forEach((entry) => {
+    if (!entry.date) return;
+    const date = new Date(entry.date);
+    const value = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+    if (!known.has(value)) {
+      const option = document.createElement("option");
+      option.value = value; option.textContent = date.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+      monthSelect.add(option); known.add(value);
+    }
+  });
+  const selected = monthSelect.value;
+  Array.from(monthSelect.options).sort((a, b) => b.value.localeCompare(a.value)).forEach((option) => monthSelect.append(option));
+  monthSelect.value = selected;
+}
+
 function renderContent() {
+  ensureExpenseMonthOptions(expenses);
   if (!monthSelect.value) return;
   renderQuickAdds();
   const parts = monthSelect.value.split("-").map(Number);
@@ -344,7 +499,7 @@ function renderContent() {
   sorted.slice(0, showAll ? 40 : 4).forEach((entry) => {
     const row = document.createElement("div");
     row.className = "expense";
-    row.innerHTML = '<div class="eicon">' + (icons[entry.category] || "·") + '</div><div class="edesc"><strong>' + escapeHtml(entry.note || entry.category) + '</strong><small>' + new Date(entry.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + " · " + escapeHtml(entry.method) + " · " + escapeHtml(entry.category) + '</small></div><div class="eamount">−' + money(entry.amount) + '</div>';
+    row.innerHTML = '<div class="eicon">' + (icons[entry.category] || "·") + '</div><div class="edesc"><strong>' + escapeHtml(entry.note || entry.category) + '</strong><small>' + new Date(entry.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + " · " + escapeHtml(entry.method) + " · " + escapeHtml(entry.category) + '</small></div><div class="eamount">−' + money(entry.amount) + '</div><div class="expense-actions"><button type="button" data-expense-action="edit" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Edit ' + escapeHtml(entry.note || entry.category) + '">Edit</button><button type="button" data-expense-action="delete" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Delete ' + escapeHtml(entry.note || entry.category) + '">Delete</button></div>';
     list.append(row);
   });
   const totals = {};
@@ -367,8 +522,14 @@ function updateBudget() {
   }).reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("budgetCaption").textContent = new Date(parts[0], parts[1] - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   $("leaderPeriod").textContent = $("budgetCaption").textContent;
+  const now = new Date();
+  const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+  $("dailySafeSetBudget").hidden = Boolean(budget);
   if (!budget) {
-    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = ""; return;
+    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = "";
+    $("dailySafeAmount").textContent = "—";
+    $("dailySafeNote").textContent = month === currentMonth ? "Set a monthly budget to get your daily guide." : "Choose the current month and set a budget to get your daily guide.";
+    return;
   }
   $("budgetEmpty").hidden = true; $("budgetProgress").hidden = false; $("setBudget").hidden = true;
   $("budgetNumbers").textContent = money(spent) + " / " + money(budget);
@@ -377,8 +538,6 @@ function updateBudget() {
   $("budgetFill").className = "budget-fill" + (ratio >= 1 ? " over" : ratio >= 0.8 ? " warn" : "");
   $("budgetStatus").textContent = ratio >= 1 ? "Over budget by " + money(spent - budget) : money(budget - spent) + " left · " + Math.round(ratio * 100) + "% used";
   $("budgetStatus").style.color = ratio >= 1 ? "#b86678" : "";
-  const now = new Date();
-  const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
   if (month === currentMonth) {
     const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1;
     const remaining = Math.max(0, budget - spent);
@@ -390,11 +549,54 @@ function updateBudget() {
   }
 }
 
-function openExpenseModal() { $("modal").classList.add("open"); setTimeout(() => $("amount").focus(), 30); }
-function closeExpenseModal() { $("modal").classList.remove("open"); }
+function dateInputValue(value = new Date()) {
+  const date = new Date(value);
+  return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
+}
+function dateFromInput(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day, 12).toISOString();
+}
+function openExpenseModal(entry = null) {
+  editingExpenseId = entry?.id || null;
+  $("expenseForm").reset();
+  method = entry?.method || "UPI";
+  $("amount").value = entry?.amount ?? "";
+  $("note").value = entry?.note || "";
+  $("category").value = entry?.category || "Food & drink";
+  $("expenseDate").value = dateInputValue(entry?.date || new Date());
+  $("expenseDate").max = dateInputValue();
+  $("expenseModalTitle").textContent = editingExpenseId ? "Edit expense" : "Add an expense";
+  $("saveExpenseBtn").textContent = editingExpenseId ? "Save changes" : "Save expense";
+  document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
+  $("modal").classList.add("open"); setTimeout(() => $("amount").focus(), 30);
+}
+function closeExpenseModal() { $("modal").classList.remove("open"); editingExpenseId = null; }
 $("addBtn").onclick = openExpenseModal;
 $("cancelBtn").onclick = closeExpenseModal;
 $("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
+$("expenseList").onclick = async (event) => {
+  const button = event.target.closest("[data-expense-action]");
+  if (!button) return;
+  const entry = expenses.find((item) => item.id === button.dataset.expenseId);
+  if (!entry) return;
+  if (button.dataset.expenseAction === "edit") { openExpenseModal(entry); return; }
+  if (!confirm("Delete “" + (entry.note || entry.category) + "” for " + money(entry.amount) + "?")) return;
+  try {
+    if (guestMode) {
+      expenses = expenses.filter((item) => item.id !== entry.id); saveGuestExpenses(); render();
+      const guestData = readGuestData();
+      if (guestData.uploadedExpenseIds.includes(entry.id)) {
+        guestData.uploadedExpenseIds = guestData.uploadedExpenseIds.filter((id) => id !== entry.id);
+        guestData.syncedExpenseIds = guestData.syncedExpenseIds.filter((id) => id !== entry.id);
+        guestData.deletedExpenseIds = Array.from(new Set([...guestData.deletedExpenseIds, entry.id]));
+        writeGuestData(guestData);
+      }
+    } else if (user) {
+      await deleteDoc(doc(userCollection("expenses"), entry.id));
+    }
+  } catch (error) { alert("This expense could not be deleted. " + error.message); }
+};
 $("quickEntryForm").onsubmit = (event) => {
   event.preventDefault();
   const raw = $("quickEntryText").value.trim();
@@ -402,13 +604,9 @@ $("quickEntryForm").onsubmit = (event) => {
   if (!match) { $("quickEntryStatus").textContent = "Add an amount, like ‘250 Swiggy dinner’."; return; }
   const amount = Number(match[1].replaceAll(",", ""));
   const note = raw.replace(match[0], "").replace(/\b(?:for|on|at|paid|rs\.?|rupees)\b/gi, " ").replace(/\s+/g, " ").trim();
-  $("amount").value = amount;
-  $("note").value = note.slice(0, 80);
-  $("category").value = guessCategory(raw);
-  method = /\bcash\b/i.test(raw) ? "Cash" : /\bcard\b/i.test(raw) ? "Card" : "UPI";
-  document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
+  const paymentMethod = /\bcash\b/i.test(raw) ? "Cash" : /\bcard\b/i.test(raw) ? "Card" : "UPI";
   $("quickEntryStatus").textContent = "Filled a draft — check the details, then save.";
-  openExpenseModal();
+  openExpenseModal({ amount, note: note.slice(0, 80), category: guessCategory(raw), method: paymentMethod, date: new Date().toISOString() });
 };
   monthSelect.onchange = () => { watchBudget(monthSelect.value); watchChallengeMembers(); render(); };
 document.querySelectorAll("[data-method]").forEach((button) => button.onclick = () => {
@@ -418,18 +616,28 @@ document.querySelectorAll("[data-method]").forEach((button) => button.onclick = 
 
 $("expenseForm").onsubmit = async (event) => {
   event.preventDefault();
-  if (!user) return;
+  if (!user && !guestMode) return;
   const amount = Number($("amount").value);
-  if (!amount || amount <= 0) return;
+  if (!amount || amount <= 0 || !$("expenseDate").value) return;
+  const entryData = { amount, method, category: $("category").value, note: $("note").value.trim(), date: dateFromInput($("expenseDate").value) };
   try {
-    const save = addDoc(userCollection("expenses"), {
-      amount, method, category: $("category").value, note: $("note").value.trim(), date: new Date().toISOString()
-    });
+    if (guestMode) {
+      if (editingExpenseId) expenses = expenses.map((entry) => entry.id === editingExpenseId ? { ...entry, ...entryData } : entry);
+      else expenses = [{ id: "guest_" + (crypto.randomUUID?.() || Date.now() + "_" + Math.random().toString(36).slice(2)), ...entryData }, ...expenses];
+      if (editingExpenseId) {
+        const guestData = readGuestData();
+        guestData.syncedExpenseIds = guestData.syncedExpenseIds.filter((id) => id !== editingExpenseId);
+        writeGuestData(guestData);
+      }
+      saveGuestExpenses(); render();
+    } else if (editingExpenseId) {
+      await updateDoc(doc(userCollection("expenses"), editingExpenseId), entryData);
+    } else {
+      await addDoc(userCollection("expenses"), entryData);
+    }
     event.target.reset(); method = "UPI";
-    document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === "UPI"));
     closeExpenseModal();
-    save.catch((error) => alert("This expense could not sync to your account. It remains on this device for now. " + error.message));
-  } catch (error) { alert("This expense could not be saved. Check your connection and try again. " + error.message); }
+  } catch (error) { alert("This expense could not be saved. Your current details are still in the form. " + error.message); }
 };
 
 function openBudgetModal() {
@@ -440,14 +648,24 @@ function openBudgetModal() {
 }
 function closeBudgetModal() { $("budgetModal").classList.remove("open"); }
 $("setBudget").onclick = openBudgetModal; $("editBudget").onclick = openBudgetModal; $("cancelBudget").onclick = closeBudgetModal;
+$("dailySafeSetBudget").onclick = openBudgetModal;
 $("budgetForm").onsubmit = async (event) => {
   event.preventDefault();
   const amount = Number($("budgetAmount").value);
-  if (!amount || amount <= 0 || !user) return;
+  if (!amount || amount <= 0 || (!user && !guestMode)) return;
   try {
-    const save = setDoc(doc(userCollection("budgets"), monthSelect.value), { amount, updatedAt: new Date().toISOString() });
+    if (guestMode) {
+      const data = readGuestData();
+      if (data.syncedBudgetMonths.includes(monthSelect.value)) {
+        data.syncedBudgetMonths = data.syncedBudgetMonths.filter((month) => month !== monthSelect.value);
+        data.overwriteBudgetMonths = Array.from(new Set([...data.overwriteBudgetMonths, monthSelect.value]));
+      }
+      data.budgets[monthSelect.value] = amount; writeGuestData(data); budgets = data.budgets; updateBudget();
+    } else {
+      const save = setDoc(doc(userCollection("budgets"), monthSelect.value), { amount, updatedAt: new Date().toISOString() });
+      save.catch((error) => alert("This budget could not sync to your account. " + error.message));
+    }
     closeBudgetModal();
-    save.catch((error) => alert("This budget could not sync to your account. " + error.message));
   } catch (error) { alert("The budget could not be saved. " + error.message); }
 };
 
@@ -511,7 +729,7 @@ $("enableAlerts").onclick = async () => {
 };
 syncReminderButton();
 function checkEveningReminder() {
-  if (!reminderEnabled || !user) return;
+  if (!reminderEnabled || (!user && !guestMode)) return;
   const now = new Date();
   const today = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
   if (now.getHours() < 22 || localStorage.getItem(remindedKey) === today) return;
@@ -530,20 +748,26 @@ function setView(view) {
   const isReports = view === "Monthly reports";
   const isAccount = view === "Your account";
   $("cards").hidden = isExpenses || isAccount;
+  $("dailySafeCard").hidden = !isOverview;
   $("budgetCard").hidden = isExpenses || isAccount;
   $("reminderCard").hidden = !isOverview;
   $("expenseSection").hidden = isAccount;
   $("quickCard").hidden = !isOverview;
+  $("quickEntryForm").closest(".quick-entry").hidden = isAccount;
+  $("quickAdds").hidden = isAccount || $("quickAddList").children.length === 0;
   $("footerNote").hidden = !isOverview;
   $("accountView").hidden = !isAccount;
   $("addBtn").hidden = isAccount;
   $("today").hidden = !isOverview;
   $("greeting").textContent = isOverview ? accountGreeting : view;
   $("greeting").nextElementSibling.textContent = isOverview ? "A calm little picture of where it went." : isExpenses ? "Every spend, in one place." : isReports ? "A clear picture of this month’s spending." : "Private to your signed-in Google account.";
+  if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
+  if (isOverview && guestMode) $("footerNote").firstChild.textContent = "Guest entries are saved only in this browser. They do not sync until you choose to sign in. ";
+  else if (isOverview) $("footerNote").firstChild.textContent = "Your entries are private to your Google account. They sync when you’re online. ";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
   $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Recent expenses";
-  $("leaderboardCard").hidden = !isOverview && !isReports;
+  $("leaderboardCard").hidden = guestMode || (!isOverview && !isReports);
   $("allBtn").hidden = isReports || isAccount;
   showAll = isExpenses;
   $("allBtn").textContent = isExpenses ? "Show recent" : "See all";
@@ -580,6 +804,7 @@ onAuthStateChanged(auth, (signedInUser) => {
   const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
   if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser);
   else {
+    if (!signedInUser && guestMode) return;
     user = null; stopExpenses?.(); stopBudget?.(); stopChallengeListeners(); showSignedOut();
     if (signedInUser) {
       signOut(auth).catch(() => {});

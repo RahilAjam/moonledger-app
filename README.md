@@ -23,6 +23,8 @@ Create an empty GitHub repository, then use VS Code's Source Control panel to in
 
 Offline persistence is optional and is enabled only when the user checks the trusted-device option at sign-in. Firestore queues offline writes and syncs them when the device reconnects. The app shell is cached for offline opening. Never use persistent offline storage on a shared or public device. Without the checkbox, offline changes are only kept in memory until the page closes.
 
+Guest mode stores expenses and budgets in this browser’s local storage without uploading them. After Google sign-in, users can choose to copy guest entries into their account; account budgets for matching months are preserved. Guest data remains available in the same browser profile, so avoid guest mode on shared devices.
+
 The app does not read UPI notifications. Users enter UPI, cash, and card expenses in the form. The evening reminder runs while the page is open.
 
 ## Quick capture

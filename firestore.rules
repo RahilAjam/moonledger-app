@@ -18,7 +18,8 @@ service cloud.firestore {
         && request.resource.data.amount > 0
         && request.resource.data.method in ['UPI', 'Cash', 'Card']
         && request.resource.data.category in [
-          'Food & drink', 'Travel', 'Shopping', 'Bills', 'Health', 'Home', 'Entertainment', 'Other'
+          'Food & drink', 'Food delivery', 'Groceries', 'Commute', 'Rent', 'Subscriptions', 'Going out',
+          'Travel', 'Shopping', 'Bills', 'Health', 'Home', 'Entertainment', 'Other'
         ]
         && request.resource.data.note is string
         && request.resource.data.note.size() <= 80
