@@ -42,6 +42,10 @@ if (new URL(location.href).searchParams.has("text") || new URL(location.href).se
 let method = "UPI";
 let showAll = false;
 let currentView = "Overview";
+let expenseMethodFilter = "all";
+let expenseCategoryFilter = "all";
+let expenseSearchText = "";
+let lastCreatedExpense = null;
 let accountGreeting = "Your money, in view.";
 let stopExpenses;
 let stopBudget;
@@ -96,6 +100,83 @@ function readGuestData() {
 }
 
 function writeGuestData(data) { localStorage.setItem(guestDataKey, JSON.stringify(data)); }
+function paydayStorageKey() { return "moonledger-payday-" + (user?.uid || "guest"); }
+function onboardingStorageKey() { return "moonledger-onboarded-" + (user?.uid || "guest"); }
+function quickPresetStorageKey() { return "moonledger-quick-presets-" + (user?.uid || "guest"); }
+function readQuickPresets() {
+  try { const value = JSON.parse(localStorage.getItem(quickPresetStorageKey()) || "[]"); return Array.isArray(value) ? value.slice(0, 5) : []; }
+  catch { return []; }
+}
+function maybeShowOnboarding() {
+  if ((!user && !guestMode) || localStorage.getItem(onboardingStorageKey()) || sharedText || $("guestImportModal").classList.contains("open")) return;
+  $("onboardingBudget").value = budgets[monthSelect.value] || "";
+  const payday = localStorage.getItem(paydayStorageKey()); $("onboardingPayday").value = payday || "";
+  $("onboardingModal").classList.add("open");
+  $("onboardingBudgetStep").hidden = false; $("onboardingPicksStep").hidden = true;
+  $("onboardingStepLabel").textContent = "A softer start · 1 of 2";
+  $("onboardingNext").hidden = false; $("onboardingFinish").hidden = true;
+  setTimeout(() => $("onboardingBudget").focus(), 100);
+}
+function closeOnboarding() { localStorage.setItem(onboardingStorageKey(), "done"); $("onboardingModal").classList.remove("open"); }
+$("onboardingNext").onclick = () => {
+  $("onboardingBudgetStep").hidden = true; $("onboardingPicksStep").hidden = false;
+  $("onboardingStepLabel").textContent = "A softer start · 2 of 2";
+  $("onboardingNext").hidden = true; $("onboardingFinish").hidden = false;
+};
+$("onboardingSkip").onclick = closeOnboarding;
+document.querySelectorAll("[data-pick]").forEach((button) => button.onclick = () => {
+  const selected = button.classList.toggle("selected"); button.setAttribute("aria-pressed", String(selected));
+});
+$("onboardingFinish").onclick = async () => {
+  $("onboardingError").textContent = "";
+  try {
+  const amount = Number($("onboardingBudget").value);
+  const payday = $("onboardingPayday").value;
+  if (payday) localStorage.setItem(paydayStorageKey(), payday);
+  const presets = Array.from(document.querySelectorAll("[data-pick].selected"), (button) => ({ note: button.dataset.pick, amount: Number(button.dataset.amount), category: button.dataset.category, method: button.dataset.method }));
+  localStorage.setItem(quickPresetStorageKey(), JSON.stringify(presets));
+  if (amount > 0) {
+    if (guestMode) { const data = readGuestData(); data.budgets[monthSelect.value] = amount; writeGuestData(data); budgets = data.budgets; }
+    else if (user) { budgets[monthSelect.value] = amount; await setDoc(doc(userCollection("budgets"), monthSelect.value), { amount, updatedAt: new Date().toISOString() }, { merge: true }); }
+  }
+  syncPaydayControl(); closeOnboarding(); render(); updateBudget();
+  } catch (error) { $("onboardingError").textContent = "Couldn’t save your setup yet: " + error.message; }
+};
+function syncPaydayControl() {
+  const stored = localStorage.getItem(paydayStorageKey());
+  $("paydayDate").value = stored ? dateInputValue(new Date(stored)) : "";
+}
+$("paydayDate").addEventListener("change", () => {
+  if ($("paydayDate").value) localStorage.setItem(paydayStorageKey(), $("paydayDate").value);
+  else localStorage.removeItem(paydayStorageKey());
+  updateBudget();
+});
+function greetingText(name = "") {
+  const hour = new Date().getHours();
+  const hello = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const first = String(name || "").trim().split(/\s+/)[0];
+  return first ? hello + ", " + first : hello;
+}
+function showSaveToast() {
+  let toast = $("saveToast");
+  if (!toast) {
+    toast = document.createElement("div"); toast.id = "saveToast"; toast.className = "save-toast"; toast.setAttribute("role", "status");
+    toast.innerHTML = '<span>✦ &nbsp;Nice, saved.</span><button type="button" aria-label="Undo saving this expense">Undo</button>';
+    document.body.append(toast);
+    toast.querySelector("button").onclick = async () => {
+      if (!lastCreatedExpense) return;
+      const entry = lastCreatedExpense; lastCreatedExpense = null;
+      try {
+        if (guestMode) { expenses = expenses.filter((item) => item.id !== entry.id); saveGuestExpenses(); }
+        else if (user) await deleteDoc(doc(userCollection("expenses"), entry.id));
+        toast.hidden = true; render();
+      } catch (error) { toast.querySelector("span").textContent = "Could not undo · " + error.message; }
+    };
+  }
+  toast.hidden = false;
+  clearTimeout(showSaveToast.timer); showSaveToast.timer = setTimeout(() => { toast.hidden = true; lastCreatedExpense = null; }, 5000);
+  if (navigator.vibrate) navigator.vibrate(12);
+}
 function saveGuestExpenses() {
   const data = readGuestData(); data.expenses = expenses; writeGuestData(data);
 }
@@ -107,12 +188,13 @@ function setGuestMode() {
   $("signOutBtn").textContent = "Exit guest";
   $("accountEmail").textContent = "Guest · this device";
   $("accountEmail").title = "Guest data is stored only in this browser";
-  $("greeting").textContent = "Your money, in view.";
+  accountGreeting = greetingText(); $("greeting").textContent = accountGreeting;
+  syncPaydayControl();
   $("accountName").textContent = "Guest space"; $("accountEmailDetail").textContent = "Stored on this device only";
-  $("sideName").textContent = "Guest space"; $("avatar").textContent = "G"; $("accountAvatar").textContent = "G";
+  $("sideName").textContent = "Me"; $("avatar").textContent = "G"; $("accountAvatar").textContent = "G";
   $("guestBanner").hidden = false; $("leaderboardCard").hidden = true;
   $("cloudStatus").textContent = "Guest mode · entries stay in this browser until you choose to sync.";
-  render(); renderTools(); watchBudget(monthSelect.value); setView(currentView); openSharedTextIfPresent();
+  render(); renderTools(); watchBudget(monthSelect.value); setView(currentView); openSharedTextIfPresent(); setTimeout(maybeShowOnboarding, 350);
 }
 
 function pendingGuestData() {
@@ -377,12 +459,13 @@ function showSignedIn(signedInUser) {
   const name = (user.displayName || user.email?.split("@")[0] || "You").trim();
   $("accountEmail").textContent = user.email || "Google account";
   $("accountEmail").title = user.email || "Google account";
-  accountGreeting = "Your money, " + name + ".";
+  accountGreeting = greetingText(name);
+  syncPaydayControl();
   $("greeting").textContent = accountGreeting;
   $("accountName").textContent = name + "’s Moonledger account";
   $("accountEmailDetail").textContent = user.email || "Google account";
   $("accountAvatar").textContent = name.charAt(0).toUpperCase();
-  $("sideName").textContent = name + "’s space";
+  $("sideName").textContent = "Me";
   $("avatar").textContent = name.charAt(0).toUpperCase();
   startSync();
   watchChallenges();
@@ -390,6 +473,7 @@ function showSignedIn(signedInUser) {
   updateGuestImportPanel();
   const guestPending = pendingGuestData();
   if (guestPending.expenses.length || guestPending.budgets.length || guestPending.deletions.length || guestPending.recurringItems.length || guestPending.debtItems.length || guestPending.noSpendDates.length) setTimeout(openGuestImportModal, 400);
+  else setTimeout(maybeShowOnboarding, 350);
 }
 
 async function signIn() {
@@ -512,7 +596,7 @@ function checkLocalBillReminders(items) {
     const key = "moonledger-bill-reminder-" + item.id + "-" + currentDayKey();
     if (localStorage.getItem(key)) continue;
     localStorage.setItem(key, "sent");
-    new Notification("Upcoming " + (item.kind === "subscription" ? "subscription" : "bill") + " · " + item.name, { body: money(item.amount) + " due in " + item.days + (item.days === 1 ? " day." : " days."), icon: "/moonledger-icon.svg" });
+    new Notification("Upcoming " + (item.kind === "subscription" ? "subscription" : "bill") + " · " + item.name, { body: money(item.amount) + " due in " + item.days + (item.days === 1 ? " day." : " days."), icon: "/moonledger-icon-192.png" });
   }
 }
 
@@ -542,10 +626,12 @@ function renderQuickAdds() {
     item.count += 1; item.latest = Math.max(item.latest, new Date(entry.date).getTime());
     grouped.set(key, item);
   });
-  const common = Array.from(grouped.values()).sort((a, b) => b.count - a.count || b.latest - a.latest).slice(0, 3);
+  const common = Array.from(grouped.values()).sort((a, b) => b.count - a.count || b.latest - a.latest);
+  const preferred = readQuickPresets();
+  const quicks = [...preferred, ...common].filter((entry, index, all) => all.findIndex((item) => item.note?.toLowerCase() === entry.note?.toLowerCase() && Number(item.amount) === Number(entry.amount)) === index).slice(0, 4);
   container.replaceChildren();
-  $("quickAdds").hidden = common.length === 0;
-  common.forEach((entry) => {
+  $("quickAdds").hidden = quicks.length === 0;
+  quicks.forEach((entry) => {
     const button = document.createElement("button");
     button.type = "button"; button.className = "quick-add-chip";
     button.textContent = entry.note + " · " + money(entry.amount);
@@ -620,15 +706,33 @@ function renderContent() {
   $("monthCompare").textContent = monthItems.length
     ? monthItems.length + (monthItems.length === 1 ? " expense recorded" : " expenses recorded")
     : "Start with your first expense";
-  const sorted = monthItems.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  const todayKey = currentDayKey();
+  const isHome = currentView === "Overview";
+  let visibleItems = isHome ? monthItems.filter((entry) => currentDayKey(new Date(entry.date)) === todayKey) : monthItems;
+  if (currentView === "Expenses" && expenseMethodFilter !== "all") visibleItems = visibleItems.filter((entry) => entry.method === expenseMethodFilter);
+  if (currentView === "Expenses" && expenseCategoryFilter !== "all") visibleItems = visibleItems.filter((entry) => entry.category === expenseCategoryFilter);
+  if (currentView === "Expenses" && expenseSearchText) visibleItems = visibleItems.filter((entry) => (entry.note + " " + entry.category + " " + entry.method).toLowerCase().includes(expenseSearchText));
+  const sorted = visibleItems.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
   const list = $("expenseList");
   list.replaceChildren();
-  if (!sorted.length) list.innerHTML = '<div class="empty">Nothing here yet. Add your first expense to get started.</div>';
-  sorted.slice(0, showAll ? 40 : 4).forEach((entry) => {
+  if (!sorted.length) list.innerHTML = isHome
+    ? '<div class="empty">Nothing here yet. Add a spend whenever you’re ready.</div>'
+    : '<div class="empty">No matching spends yet. Try another search or add an expense.</div>';
+  const listEntries = sorted.slice(0, showAll ? 100 : isHome ? 4 : 40);
+  let lastDay = "";
+  listEntries.forEach((entry) => {
+    const day = currentDayKey(new Date(entry.date));
+    if (!isHome && day !== lastDay) {
+      const dayItems = listEntries.filter((item) => currentDayKey(new Date(item.date)) === day);
+      const dayTotal = dayItems.reduce((sum, item) => sum + Number(item.amount), 0);
+      const group = document.createElement("div"); group.className = "day-group";
+      group.innerHTML = '<div class="day-heading"><span>' + new Date(entry.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" }) + '</span><span>' + money(dayTotal) + '</span></div>';
+      list.append(group); lastDay = day;
+    }
     const row = document.createElement("div");
     row.className = "expense";
     row.innerHTML = '<div class="eicon">' + (icons[entry.category] || "·") + '</div><div class="edesc"><strong>' + escapeHtml(entry.note || entry.category) + '</strong><small>' + new Date(entry.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + " · " + escapeHtml(entry.method) + " · " + escapeHtml(entry.category) + '</small></div><div class="eamount">−' + money(entry.amount) + '</div><div class="expense-actions"><button type="button" data-expense-action="edit" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Edit ' + escapeHtml(entry.note || entry.category) + '">Edit</button><button type="button" data-expense-action="delete" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Delete ' + escapeHtml(entry.note || entry.category) + '">Delete</button></div>';
-    list.append(row);
+    if (!isHome) list.lastElementChild?.append(row); else list.append(row);
   });
   const totals = {};
   monthItems.forEach((entry) => { totals[entry.category] = (totals[entry.category] || 0) + Number(entry.amount); });
@@ -636,6 +740,16 @@ function renderContent() {
   $("categories").innerHTML = categories.length
     ? categories.map(([name, amount]) => '<div class="category"><div class="cat-head"><span>' + escapeHtml(name) + '</span><small>' + money(amount) + '</small></div><div class="bar"><i style="width:' + Math.max(4, Math.round(amount / total * 100)) + '%"></i></div></div>').join("")
     : '<div class="empty">Your category breakdown will show up here.</div>';
+  const palette = ["#68e2cc", "#9680ff", "#ef84c8", "#ffc66d", "#72b8ff", "#f28d7d", "#70d9e8"];
+  let cursor = 0;
+  const allCategories = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const arcs = allCategories.map(([, amount], index) => { const start = cursor; cursor += total ? amount / total * 100 : 0; return palette[index % palette.length] + " " + start + "% " + cursor + "%"; });
+  $("reportDonut").style.background = arcs.length ? "conic-gradient(" + arcs.join(",") + ")" : "conic-gradient(#ffffff18 0 100%)";
+  $("reportTotal").textContent = money(total);
+  const byWeekday = Array.from({ length: 7 }, () => 0);
+  monthItems.forEach((entry) => { byWeekday[new Date(entry.date).getDay()] += Number(entry.amount); });
+  const maxDay = Math.max(...byWeekday, 1);
+  $("weeklyBars").innerHTML = byWeekday.map((amount, day) => '<div class="week-bar ' + (day === 0 || day === 6 ? "weekend" : "") + '" aria-label="' + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day] + " " + money(amount) + '"><i style="height:' + Math.max(4, amount / maxDay * 65) + 'px"></i><small>' + ["S", "M", "T", "W", "T", "F", "S"][day] + '</small></div>').join("");
 }
 
 function render() { renderContent(); updateBudget(); syncChallengeSummary(); renderLeaderboard(); renderTools(); renderInsights(); }
@@ -652,6 +766,8 @@ function updateBudget() {
   $("leaderPeriod").textContent = $("budgetCaption").textContent;
   const now = new Date();
   const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+  $("dailySafeCard").classList.toggle("has-budget", Boolean(budget) && month === currentMonth);
+  $("dailySafeCard").style.setProperty("--budget-progress", Math.min(100, budget ? spent / budget * 100 : 0) + "%");
   $("dailySafeSetBudget").hidden = Boolean(budget);
   if (!budget) {
     $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = "";
@@ -667,10 +783,18 @@ function updateBudget() {
   $("budgetStatus").textContent = ratio >= 1 ? "Over budget by " + money(spent - budget) : money(budget - spent) + " left · " + Math.round(ratio * 100) + "% used";
   $("budgetStatus").style.color = ratio >= 1 ? "#b86678" : "";
   if (month === currentMonth) {
-    const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1;
+    const storedPayday = localStorage.getItem(paydayStorageKey());
+    const configuredDay = storedPayday ? Number(storedPayday.split("-")[2]) : 0;
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const paydayDay = configuredDay || monthEnd;
+    let nextPayday = new Date(now.getFullYear(), now.getMonth(), Math.min(paydayDay, monthEnd), 12);
+    if (nextPayday < now) { const nextMonthLastDay = new Date(now.getFullYear(), now.getMonth() + 2, 0).getDate(); nextPayday = new Date(now.getFullYear(), now.getMonth() + 1, Math.min(paydayDay, nextMonthLastDay), 12); }
+    const daysLeft = Math.max(1, Math.ceil((nextPayday - now) / 86400000) + 1);
     const remaining = Math.max(0, budget - spent);
     $("dailySafeAmount").textContent = money(Math.floor(remaining / Math.max(daysLeft, 1)));
-    $("dailySafeNote").textContent = remaining ? remaining + " left across " + daysLeft + (daysLeft === 1 ? " day" : " days") : "You’ve reached this month’s budget. Adjust it if your plans changed.";
+    const ringColor = ratio >= 1 ? "#ff827e" : ratio >= 0.8 ? "#ffc45c" : "#6de5bd";
+    $("dailySafeCard").style.setProperty("--ring-color", ringColor);
+    $("dailySafeNote").textContent = remaining ? money(remaining) + " left · " + daysLeft + (daysLeft === 1 ? " day" : " days") + (configuredDay ? " to payday · you're on track" : " left this month") : "You’ve reached this month’s budget. Adjust it if your plans changed.";
   } else {
     $("dailySafeAmount").textContent = "—";
     $("dailySafeNote").textContent = "Choose the current month to see a daily spending guide.";
@@ -697,10 +821,12 @@ function openExpenseModal(entry = null) {
   $("expenseModalTitle").textContent = editingExpenseId ? "Edit expense" : "Add an expense";
   $("saveExpenseBtn").textContent = editingExpenseId ? "Save changes" : "Save expense";
   document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
+  renderCategoryChips(); syncDateChoices();
   $("modal").classList.add("open"); setTimeout(() => $("amount").focus(), 30);
 }
 function closeExpenseModal() { $("modal").classList.remove("open"); editingExpenseId = null; }
 $("addBtn").onclick = openExpenseModal;
+$("mobileAddBtn").onclick = openExpenseModal;
 $("cancelBtn").onclick = closeExpenseModal;
 $("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
 $("expenseList").onclick = async (event) => {
@@ -763,6 +889,51 @@ document.querySelectorAll("[data-method]").forEach((button) => button.onclick = 
   document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice === button));
 });
 
+function renderCategoryChips() {
+  const select = $("category"), container = $("categoryChips");
+  if (!select || !container) return;
+  container.replaceChildren();
+  Array.from(select.options).forEach((option) => {
+    const chip = document.createElement("button");
+    chip.type = "button"; chip.className = "category-chip";
+    chip.textContent = (icons[option.value] || "·") + " " + option.value;
+    chip.classList.toggle("selected", option.value === select.value);
+    chip.setAttribute("aria-pressed", String(option.value === select.value));
+    chip.onclick = () => { select.value = option.value; renderCategoryChips(); };
+    container.append(chip);
+  });
+  select.classList.add("category-select-hidden");
+}
+function syncDateChoices() {
+  const input = $("expenseDate"), value = input.value;
+  const today = dateInputValue(), yesterdayDate = new Date(); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = dateInputValue(yesterdayDate);
+  document.querySelectorAll("[data-date-choice]").forEach((button) => button.classList.toggle("selected", value === today || value === yesterday ? button.dataset.dateChoice === (value === yesterday ? "yesterday" : "today") : false));
+  input.max = today;
+}
+document.querySelectorAll("[data-date-choice]").forEach((button) => button.onclick = () => {
+  const day = new Date(); if (button.dataset.dateChoice === "yesterday") day.setDate(day.getDate() - 1);
+  $("expenseDate").value = dateInputValue(day); syncDateChoices();
+});
+$("expenseDate").addEventListener("change", syncDateChoices);
+$("category").addEventListener("change", renderCategoryChips);
+$("amountPad").addEventListener("click", (event) => {
+  const key = event.target.closest("[data-digit]")?.dataset.digit;
+  if (!key) return;
+  const input = $("amount");
+  if (key === "clear") input.value = "";
+  else if (key === "back") input.value = input.value.slice(0, -1);
+  else input.value = (input.value || "") + key;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+});
+$("expenseSearch").addEventListener("input", (event) => { expenseSearchText = event.target.value.trim().toLowerCase(); render(); });
+$("expenseCategoryFilter").addEventListener("change", (event) => { expenseCategoryFilter = event.target.value; render(); });
+document.querySelectorAll("[data-expense-filter]").forEach((button) => button.onclick = () => {
+  expenseMethodFilter = button.dataset.expenseFilter;
+  document.querySelectorAll("[data-expense-filter]").forEach((item) => { item.classList.toggle("active", item === button); item.setAttribute("aria-pressed", String(item === button)); });
+  render();
+});
+
 $("expenseForm").onsubmit = async (event) => {
   event.preventDefault();
   if (!user && !guestMode) return;
@@ -770,9 +941,11 @@ $("expenseForm").onsubmit = async (event) => {
   if (!amount || amount <= 0 || !$("expenseDate").value) return;
   const entryData = { amount, method, category: $("category").value, note: $("note").value.trim(), date: dateFromInput($("expenseDate").value) };
   try {
+    let createdId = null;
     if (guestMode) {
       if (editingExpenseId) expenses = expenses.map((entry) => entry.id === editingExpenseId ? { ...entry, ...entryData } : entry);
       else expenses = [{ id: "guest_" + (crypto.randomUUID?.() || Date.now() + "_" + Math.random().toString(36).slice(2)), ...entryData }, ...expenses];
+      if (!editingExpenseId) createdId = expenses[0].id;
       if (editingExpenseId) {
         const guestData = readGuestData();
         guestData.syncedExpenseIds = guestData.syncedExpenseIds.filter((id) => id !== editingExpenseId);
@@ -782,10 +955,11 @@ $("expenseForm").onsubmit = async (event) => {
     } else if (editingExpenseId) {
       await updateDoc(doc(userCollection("expenses"), editingExpenseId), entryData);
     } else {
-      await addDoc(userCollection("expenses"), entryData);
+      const saved = await addDoc(userCollection("expenses"), entryData); createdId = saved.id;
     }
     event.target.reset(); method = "UPI";
     closeExpenseModal();
+    if (!editingExpenseId && createdId) { lastCreatedExpense = { id: createdId, ...entryData }; showSaveToast(); }
   } catch (error) { alert("This expense could not be saved. Your current details are still in the form. " + error.message); }
 };
 
@@ -1071,6 +1245,7 @@ function setView(view) {
   $("dailySafeCard").hidden = !isOverview;
   $("budgetCard").hidden = isExpenses || isAccount;
   $("reminderCard").hidden = !isOverview;
+  $("reminderCard").hidden = !isOverview || new Date().getHours() < 21;
   $("insightCard").hidden = !isOverview;
   $("reportTools").hidden = !isReports;
   $("expenseSection").hidden = isAccount;
@@ -1081,15 +1256,17 @@ function setView(view) {
   $("accountView").hidden = !isAccount;
   $("addBtn").hidden = isAccount;
   $("today").hidden = !isOverview;
-  $("greeting").textContent = isOverview ? accountGreeting : view;
-  $("greeting").nextElementSibling.textContent = isOverview ? "A calm little picture of where it went." : isExpenses ? "Every spend, in one place." : isReports ? "A clear picture of this month’s spending." : "Private to your signed-in Google account.";
+  $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? "Me" : view;
+  $("greeting").nextElementSibling.textContent = isOverview ? "A calm little picture of where it went." : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
   if (isOverview && guestMode) $("footerNote").firstChild.textContent = "Guest entries are saved only in this browser. They do not sync until you choose to sign in. ";
   else if (isOverview) $("footerNote").firstChild.textContent = "Your entries are private to your Google account. They sync when you’re online. ";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
-  $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Recent expenses";
+  $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Today’s spends";
   $("leaderboardCard").hidden = guestMode || (!isOverview && !isReports);
+  $("expenseFilters").hidden = !isExpenses;
+  if (isExpenses && $("expenseSearch").value !== expenseSearchText) $("expenseSearch").value = expenseSearchText;
   $("allBtn").hidden = isReports || isAccount;
   showAll = isExpenses;
   $("allBtn").textContent = isExpenses ? "Show recent" : "See all";
@@ -1098,6 +1275,7 @@ function setView(view) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   render();
 }
+setInterval(() => { if (currentView === "Overview") $("reminderCard").hidden = new Date().getHours() < 21; }, 60000);
 document.querySelectorAll(".nav[data-view]").forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
 document.querySelectorAll(".mobile-nav button[data-nav]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.nav)));
 
@@ -1109,9 +1287,9 @@ function setTheme(theme) {
   themeToggle.textContent = isDark ? "☀" : "☾";
   themeToggle.setAttribute("aria-label", "Switch to " + (isDark ? "light" : "dark") + " mode");
   themeToggle.title = "Switch to " + (isDark ? "light" : "dark") + " mode";
-  const themeMeta = document.querySelector('meta[name="theme-color"]'); if (themeMeta) themeMeta.content = isDark ? "#11111c" : "#f7f6fb";
+  const themeMeta = document.querySelector('meta[name="theme-color"]'); if (themeMeta) themeMeta.content = isDark ? "#0d0c19" : "#f7f5fc";
 }
-setTheme(localStorage.getItem(themeKey) || "light");
+setTheme(localStorage.getItem(themeKey) || "dark");
 themeToggle.onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
 
 for (let index = 0; index < 6; index++) {

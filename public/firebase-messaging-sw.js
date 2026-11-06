@@ -11,7 +11,7 @@ firebase.initializeApp({
 const messaging = firebase.messaging();
 messaging.onBackgroundMessage((payload) => {
   const title = payload.notification?.title || "Moonledger · a gentle reminder";
-  const options = { body: payload.notification?.body || "Open Moonledger for a quick check-in.", icon: "/moonledger-icon.svg", badge: "/moon.svg", data: { url: payload.fcmOptions?.link || "/" } };
+  const options = { body: payload.notification?.body || "Open Moonledger for a quick check-in.", icon: "/moonledger-icon-192.png", badge: "/moon.svg", data: { url: payload.fcmOptions?.link || "/" } };
   self.registration.showNotification(title, options);
 });
 self.addEventListener("notificationclick", (event) => {
