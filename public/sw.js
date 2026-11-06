@@ -1,8 +1,15 @@
-const CACHE = "moonledger-shell-v4";
+const CACHE = "moonledger-shell-v5";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    await cache.addAll(["/", "/manifest.webmanifest", "/moonledger-icon.svg"]);
+    await cache.addAll([
+      "/",
+      "/manifest.webmanifest",
+      "/moonledger-icon.svg",
+      "/moonledger-icon-192.png",
+      "/moonledger-icon-512.png",
+      "/moonledger-social.png",
+    ]);
     const response = await cache.match("/");
     const html = await response.text();
     const assets = Array.from(html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g), (match) => match[1]);
