@@ -1,8 +1,8 @@
-const CACHE = "moonledger-shell-v1";
+const CACHE = "moonledger-shell-v2";
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
-    await cache.addAll(["/", "/manifest.webmanifest", "/moon.svg"]);
+    await cache.addAll(["/", "/manifest.webmanifest", "/moonledger-icon.svg"]);
     const response = await cache.match("/");
     const html = await response.text();
     const assets = Array.from(html.matchAll(/(?:src|href)="([^"]+\.(?:js|css))"/g), (match) => match[1]);

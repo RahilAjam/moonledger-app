@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="night" x1="52" y1="30" x2="455" y2="490" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#49477f"/>
+      <stop offset=".52" stop-color="#28284e"/>
+      <stop offset="1" stop-color="#17182f"/>
+    </linearGradient>
+    <linearGradient id="moon" x1="169" y1="105" x2="353" y2="399" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff6dc"/>
+      <stop offset="1" stop-color="#e2c989"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 222 -222 0 256 256)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a5a2e8" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#a5a2e8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#night)"/>
+  <circle cx="256" cy="256" r="222" fill="url(#glow)"/>
+  <circle cx="365" cy="142" r="4" fill="#f6edda" opacity=".78"/>
+  <circle cx="132" cy="355" r="3" fill="#f6edda" opacity=".62"/>
+  <path d="M365 218a127 127 0 1 1-78-119 145 145 0 1 0 78 119Z" fill="url(#moon)" transform="translate(0 4)"/>
+  <path d="m379 302 7 18 18 7-18 7-7 18-7-18-18-7 18-7 7-18Z" fill="#fff6df"/>
+</svg>
