@@ -31,6 +31,24 @@ The app does not read UPI notifications. Users enter UPI, cash, and card expense
 
 The dashboard accepts short descriptions such as `250 Swiggy dinner` and fills a draft amount, note, payment method, and best-guess category for the user to review before saving. Frequent-spend buttons are generated from that account’s own recent entries. The daily spending guide divides the current month’s remaining budget by the number of days left; it is a planning aid, not a guarantee of affordability.
 
+## Free and Plus plans
+
+Free includes expense tracking (add/edit/delete), categories, payment methods, dates and notes, one monthly budget with the daily guide, the basic monthly category report, up to five quick-add buttons, the evening reminder, both themes, guest mode, Google sync, up to three recurring bills/subscriptions, one savings circle, and a two-person split.
+
+Plus is currently an invite-only entitlement; Moonledger does not collect payments or start subscriptions. Existing expense records remain available. The app gates natural-language entry, pasted-message parsing, extra recurring items/circles, larger splits and personal IOU tracking, weekday insight charts, CSV export, and recap sharing behind Plus. Some broader roadmap ideas such as PDF export, statement import, multiple budgets, and subscription audits are not implemented yet and are not represented as working features.
+
+### Issue a private Plus Pass
+
+Each pass is a one-time, permanent unlock tied to one exact Gmail address. Create it yourself in **Firebase Console → Firestore Database → Data**; never put real pass codes in GitHub, app source, screenshots, or a public message.
+
+1. Generate a random 32-character uppercase hexadecimal ID on your own computer (for example, in a private terminal run `node -e "console.log(require('node:crypto').randomBytes(16).toString('hex').toUpperCase())"`). Keep the output private and send it only to the intended person.
+2. In Firestore, create a top-level collection named `accessCodes`, and a document whose ID is that code.
+3. Add fields: `active` (boolean `true`), `recipientEmail` (string with the recipient’s exact lowercase Gmail address), and optionally `note` (string, for your private label). Do not add `claimedBy` or `claimedAt`.
+4. Deploy the current Firestore rules. The rules prevent app users from listing or reading codes, creating codes, or claiming another person’s pass. Redeeming writes the claim and the user’s Plus entitlement atomically.
+5. The recipient signs in to Moonledger with that Gmail, opens **Me → Plus Pass**, enters the code, and selects **Unlock Plus**. A pass cannot be reused, and only the matching account can claim it.
+
+For your own account, create a pass addressed to your Gmail the same way. If a code is lost before redemption, delete the unused code in the Firebase Console and issue a new random one. After redemption, the entitlement remains on that account; deleting its claimed code does not revoke it.
+
 ## Optional website ads (currently off)
 
 Moonledger includes a public budgeting guide at `/learn.html` and a privacy page at `/privacy.html`. An ad slot is reserved only on the public guide; ad code is not included on the signed-in dashboard or around expense data. Advertising is disabled by default in `public/ads-config.js`, so the site makes no ad-network request while it remains off.

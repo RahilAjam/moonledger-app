@@ -41,6 +41,32 @@ service cloud.firestore {
         && request.auth.token.email.matches('^[^@]+@gmail[.]com$');
     }
 
+    function validPlusEntitlement(userId, code) {
+      let codePath = /databases/$(database)/documents/accessCodes/$(code);
+      return code.matches('^[A-F0-9]{32}$')
+        && existsAfter(codePath)
+        && getAfter(codePath).data.active == true
+        && getAfter(codePath).data.claimedBy == userId
+        && getAfter(codePath).data.recipientEmail == request.auth.token.email
+        && getAfter(codePath).data.claimedAt == request.time;
+    }
+
+    function validPlusPassClaim(code) {
+      let entitlementPath = /databases/$(database)/documents/users/$(request.auth.uid)/entitlements/plus;
+      return isSignedInGoogleGmail()
+        && code.matches('^[A-F0-9]{32}$')
+        && resource.data.active == true
+        && resource.data.recipientEmail == request.auth.token.email
+        && (!('claimedBy' in resource.data) || resource.data.claimedBy == null)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy', 'claimedAt'])
+        && request.resource.data.claimedBy == request.auth.uid
+        && request.resource.data.claimedAt == request.time
+        && existsAfter(entitlementPath)
+        && getAfter(entitlementPath).data.tier == 'plus'
+        && getAfter(entitlementPath).data.accessCode == code
+        && getAfter(entitlementPath).data.grantedAt == request.time;
+    }
+
     function isCircleMember(circleId) {
       return isSignedInGoogleGmail()
         && exists(/databases/$(database)/documents/challenges/$(circleId)/members/$(request.auth.uid));
@@ -194,6 +220,18 @@ service cloud.firestore {
           && request.resource.data.startDate is string
           && request.resource.data.startDate.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
       }
+
+      match /entitlements/{entitlementId} {
+        allow read: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
+          && entitlementId == 'plus'
+          && request.resource.data.keys().hasOnly(['tier', 'accessCode', 'grantedAt'])
+          && request.resource.data.tier == 'plus'
+          && request.resource.data.accessCode is string
+          && request.resource.data.grantedAt == request.time
+          && validPlusEntitlement(userId, request.resource.data.accessCode);
+        allow delete: if false;
+      }
     }
 
     match /challengeInvites/{inviteCode} {
@@ -210,6 +248,11 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/challenges/$(request.resource.data.challengeId)).data.ownerId == request.auth.uid;
       allow update, delete: if isSignedInGoogleGmail()
         && resource.data.createdBy == request.auth.uid;
+    }
+
+    match /accessCodes/{code} {
+      allow get, list, create, delete: if false;
+      allow update: if validPlusPassClaim(code);
     }
 
     match /challenges/{circleId} {

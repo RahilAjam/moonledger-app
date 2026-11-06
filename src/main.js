@@ -29,6 +29,8 @@ const monthSelect = $("monthSelect");
 let db;
 let user = null;
 let guestMode = false;
+let hasPlus = false;
+let stopEntitlement = null;
 let editingExpenseId = null;
 let expenses = [];
 let budgets = {};
@@ -76,6 +78,69 @@ function getDatabase() {
 function userCollection(name) {
   return collection(getDatabase(), "users", user.uid, name);
 }
+
+function plusActive(data) {
+  if (data?.tier !== "plus") return false;
+  return !data.expiresAt || data.expiresAt.toDate?.().getTime() > Date.now();
+}
+
+function syncPlanUi() {
+  const label = hasPlus ? "Plus · unlocked" : "Free plan";
+  const status = $("planStatus");
+  if (status) status.textContent = label;
+  const badge = $("planBadge");
+  if (badge) badge.textContent = hasPlus ? "PLUS" : "FREE";
+  const redeem = $("redeemPlusForm");
+  if (redeem) redeem.hidden = hasPlus || !user;
+}
+
+const planCard = document.createElement("section");
+planCard.className = "plan-card";
+planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> expenses, budgets, safe-to-spend, monthly category reports, five quick adds, reminders, themes, up to three bills, one circle, and two-person splits.</p><p><strong>Plus:</strong> effortless capture, deeper insights, more bills and circles, larger splits, IOUs, CSV export, and shareable recaps.</p><form id="redeemPlusForm" class="plus-redeem"><label for="plusPassCode">Have a personal Plus Pass?</label><div><input id="plusPassCode" type="text" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter your 32-character code" aria-label="Plus Pass code"><button class="quiet-btn" type="submit">Unlock Plus</button></div><small>Passes are one-use and tied to the Gmail address they were issued for.</small></form><p class="plan-status" id="plusPassStatus" role="status" aria-live="polite"></p>';
+$("accountView").prepend(planCard);
+
+const plusPrompt = document.createElement("div");
+plusPrompt.className = "overlay"; plusPrompt.id = "plusPrompt"; plusPrompt.setAttribute("role", "dialog"); plusPrompt.setAttribute("aria-modal", "true");
+plusPrompt.innerHTML = '<section class="modal plus-modal"><span class="plan-badge">MOONLEDGER PLUS</span><h2>Make ' + ' <span id="plusPromptFeature">this feature</span> ' + 'easier</h2><p>Plus adds time-saving tools, deeper insights, and more ways to share. Your expense history stays yours.</p><div class="hint">Plus access is currently available by personal invite code. No subscription or payment is set up in this version.</div><div class="modal-actions"><button class="primary" id="closePlusPrompt" type="button">Got it</button></div></section>';
+document.body.append(plusPrompt);
+
+function watchEntitlement() {
+  stopEntitlement?.(); stopEntitlement = null; hasPlus = false; syncPlanUi();
+  if (!user) return;
+  stopEntitlement = onSnapshot(doc(getDatabase(), "users", user.uid, "entitlements", "plus"), (snapshot) => {
+    hasPlus = snapshot.exists() && plusActive(snapshot.data());
+    syncPlanUi();
+    renderQuickAdds(); renderInsights();
+  }, (error) => console.warn("Plan status could not be loaded.", error));
+}
+
+function promptPlus(feature) {
+  $("plusPromptFeature").textContent = feature;
+  $("plusPrompt").classList.add("open");
+}
+
+$("closePlusPrompt").onclick = () => $("plusPrompt").classList.remove("open");
+$("redeemPlusForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const code = $("plusPassCode").value.trim().toUpperCase();
+  const status = $("plusPassStatus");
+  if (!user) { status.textContent = "Sign in with Google before redeeming a Plus Pass."; return; }
+  if (!/^[A-F0-9]{32}$/.test(code)) { status.textContent = "Enter the 32-character Plus Pass from your invitation."; return; }
+  status.textContent = "Checking your pass…";
+  try {
+    const batch = writeBatch(getDatabase());
+    batch.update(doc(getDatabase(), "accessCodes", code), { claimedBy: user.uid, claimedAt: serverTimestamp() });
+    batch.set(doc(getDatabase(), "users", user.uid, "entitlements", "plus"), {
+      tier: "plus", accessCode: code, grantedAt: serverTimestamp()
+    });
+    await batch.commit();
+    $("plusPassCode").value = "";
+    status.textContent = "Plus is unlocked for this account. Enjoy every feature.";
+  } catch (error) {
+    console.warn("Plus Pass redemption failed.", error);
+    status.textContent = "That pass could not be redeemed. Check that it matches this Gmail account and has not been used.";
+  }
+};
 
 function readGuestData() {
   try {
@@ -182,6 +247,7 @@ function saveGuestExpenses() {
 }
 function setGuestMode() {
   guestMode = true; user = null; expenses = readGuestData().expenses; budgets = readGuestData().budgets;
+  hasPlus = false; syncPlanUi();
   const guestData = readGuestData(); recurringItems = guestData.recurringItems; debtItems = guestData.debtItems; noSpendDates = guestData.noSpendDates;
   joinedChallenges = []; challengeMemberData = []; stopChallengeListeners();
   gate.hidden = true; shell.hidden = false; mobileNav.hidden = false; $("signOutBtn").hidden = false;
@@ -391,6 +457,7 @@ function closeChallengeModals() {
 $("challengeCreateForm").onsubmit = async (event) => {
   event.preventDefault();
   if (!user) return;
+  if (!hasPlus && joinedChallenges.length >= 1) { promptPlus("More than one savings circle"); return; }
   const name = $("challengeName").value.trim().slice(0, 40) || "Savings circle";
   const id = doc(collection(getDatabase(), "challenges")).id;
   const inviteCode = crypto.randomUUID().replace(/-/g, "").toUpperCase();
@@ -419,6 +486,7 @@ $("challengeCreateForm").onsubmit = async (event) => {
 $("challengeJoinForm").onsubmit = async (event) => {
   event.preventDefault();
   if (!user) return;
+  if (!hasPlus && joinedChallenges.length >= 1) { promptPlus("More than one savings circle"); return; }
   const code = $("challengeCode").value.trim().toUpperCase();
   try {
     const invitation = await getDoc(doc(getDatabase(), "challengeInvites", code));
@@ -445,11 +513,13 @@ function showSignedOut() {
   $("signOutBtn").hidden = true;
   $("guestBanner").hidden = true;
   guestMode = false;
+  stopEntitlement?.(); stopEntitlement = null; hasPlus = false; syncPlanUi();
 }
 
 function showSignedIn(signedInUser) {
   user = signedInUser;
   guestMode = false;
+  watchEntitlement();
   gate.hidden = true;
   shell.hidden = false;
   mobileNav.hidden = false;
@@ -607,7 +677,9 @@ function renderInsights() {
   const biggest = items.slice().sort((a, b) => Number(b.amount) - Number(a.amount))[0];
   const weekendSpend = items.filter((entry) => [0, 6].includes(new Date(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
   const weekdaySpend = items.filter((entry) => ![0, 6].includes(new Date(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
-  $("insightText").textContent = deliveryCount >= 3 ? "You ordered food " + deliveryCount + " times this month. Small changes can make a noticeable difference." : weekendSpend > weekdaySpend && items.length >= 4 ? "Your weekend spending is higher than your weekday spending so far this month." : biggest ? "Your biggest logged spend is " + (biggest.note || biggest.category) + " at " + money(biggest.amount) + "." : "Add a few spends and Moonledger will find a useful pattern for you.";
+  $("insightText").textContent = hasPlus
+    ? weekendSpend > weekdaySpend && items.length >= 4 ? "Your weekend spending is higher than your weekday spending so far this month." : deliveryCount >= 3 ? "You ordered food " + deliveryCount + " times this month. Small changes can make a noticeable difference." : biggest ? "Your biggest logged spend is " + (biggest.note || biggest.category) + " at " + money(biggest.amount) + "." : "Add a few spends and Moonledger will find a useful pattern for you."
+    : items.length ? "You’ve logged " + items.length + " spends this month. Your category breakdown is in Reports." : "Add a few spends and Moonledger will show your monthly category breakdown here.";
   let streak = 0; const today = new Date(); const streakStart = noSpendDates.includes(currentDayKey(today)) ? 0 : 1;
   for (let offset = streakStart; offset < streakStart + 365; offset++) { const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offset, 12); if (noSpendDates.includes(currentDayKey(day))) streak++; else break; }
   $("streakText").textContent = "No-spend streak: " + streak + (streak === 1 ? " day" : " days");
@@ -628,7 +700,7 @@ function renderQuickAdds() {
   });
   const common = Array.from(grouped.values()).sort((a, b) => b.count - a.count || b.latest - a.latest);
   const preferred = readQuickPresets();
-  const quicks = [...preferred, ...common].filter((entry, index, all) => all.findIndex((item) => item.note?.toLowerCase() === entry.note?.toLowerCase() && Number(item.amount) === Number(entry.amount)) === index).slice(0, 4);
+  const quicks = [...preferred, ...common].filter((entry, index, all) => all.findIndex((item) => item.note?.toLowerCase() === entry.note?.toLowerCase() && Number(item.amount) === Number(entry.amount)) === index).slice(0, hasPlus ? 20 : 5);
   container.replaceChildren();
   $("quickAdds").hidden = quicks.length === 0;
   quicks.forEach((entry) => {
@@ -750,6 +822,7 @@ function renderContent() {
   monthItems.forEach((entry) => { byWeekday[new Date(entry.date).getDay()] += Number(entry.amount); });
   const maxDay = Math.max(...byWeekday, 1);
   $("weeklyBars").innerHTML = byWeekday.map((amount, day) => '<div class="week-bar ' + (day === 0 || day === 6 ? "weekend" : "") + '" aria-label="' + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day] + " " + money(amount) + '"><i style="height:' + Math.max(4, amount / maxDay * 65) + 'px"></i><small>' + ["S", "M", "T", "W", "T", "F", "S"][day] + '</small></div>').join("");
+  $("weeklyBars").hidden = !hasPlus;
 }
 
 function render() { renderContent(); updateBudget(); syncChallengeSummary(); renderLeaderboard(); renderTools(); renderInsights(); }
@@ -853,6 +926,7 @@ $("expenseList").onclick = async (event) => {
 };
 $("quickEntryForm").onsubmit = (event) => {
   event.preventDefault();
+  if (!hasPlus) { promptPlus("Natural-language quick entry"); return; }
   const raw = $("quickEntryText").value.trim();
   const parsed = parseExpenseText(raw);
   if (!parsed) { $("quickEntryStatus").textContent = "Add an amount, like ‘250 Swiggy dinner’."; return; }
@@ -864,6 +938,7 @@ function openSharedTextIfPresent() {
   if (!sharedText || (!user && !guestMode)) return;
   const parsed = parseExpenseText(sharedText);
   if (parsed) {
+    if (!hasPlus) { promptPlus("Parsing a shared payment message"); sharedText = ""; return; }
     $("quickEntryStatus").textContent = "Shared message parsed on this device. Review the draft before saving.";
     openExpenseModal({ ...parsed, date: new Date().toISOString() });
   } else {
@@ -874,6 +949,7 @@ function openSharedTextIfPresent() {
   sharedText = "";
 }
 $("parseSms").onclick = () => {
+  if (!hasPlus) { promptPlus("On-device SMS and UPI message parsing"); return; }
   const raw = $("smsText").value;
   const parsed = parseExpenseText(raw);
   if (!parsed) { $("smsStatus").textContent = "Couldn’t find an amount. Check the message and fill the form yourself."; return; }
@@ -1040,6 +1116,7 @@ $("recurringForm").onsubmit = async (event) => {
   event.preventDefault(); const form = event.currentTarget; const fields = new FormData(form);
   const item = { name: String(fields.get("name")).trim().slice(0, 50), amount: Number(fields.get("amount")), dueDay: Number(fields.get("dueDay")), kind: String(fields.get("kind")), enabled: true };
   if (!item.name || item.amount <= 0 || item.dueDay < 1 || item.dueDay > 31) return;
+  if (!hasPlus && recurringItems.length >= 3) { promptPlus("Unlimited bills and subscriptions"); return; }
   try {
     if (guestMode) { recurringItems = [{ id: "local_" + crypto.randomUUID(), ...item }, ...recurringItems]; saveToolLocal("recurringItems", recurringItems); renderTools(); }
     else if (user) await addDoc(userCollection("recurring"), item);
@@ -1048,6 +1125,7 @@ $("recurringForm").onsubmit = async (event) => {
 };
 $("debtForm").onsubmit = async (event) => {
   event.preventDefault(); const form = event.currentTarget; const fields = new FormData(form);
+  if (!hasPlus) { promptPlus("Personal IOU and settle-up tracking"); return; }
   const item = { person: String(fields.get("person")).trim().slice(0, 50), amount: Number(fields.get("amount")), note: String(fields.get("note") || "").trim().slice(0, 80), direction: String(fields.get("direction")), settled: false, createdAt: new Date().toISOString() };
   if (!item.person || item.amount <= 0) return;
   try {
@@ -1080,6 +1158,7 @@ $("sharedSplitForm").onsubmit = async (event) => {
   const members = challengeMemberData.filter((item) => item.challengeId === circleId);
   if (!circle) { alert("Create or join a savings circle first."); return; }
   if (members.length < 2) { alert("Invite at least one other person to this circle before splitting a cost."); return; }
+  if (!hasPlus && members.length > 2) { promptPlus("Splitting with three or more people"); return; }
   if (members.length > 20) { alert("Even splits currently support up to 20 circle members."); return; }
   try {
     await addDoc(collection(getDatabase(), "challenges", circleId, "splits"), { title: String(fields.get("title")).trim().slice(0,60), total: Number(fields.get("total")), participantCount: members.length, createdBy: user.uid, createdByName: (user.displayName || user.email?.split("@")[0] || "Moonledger user").slice(0,40), createdAt: new Date().toISOString() });
@@ -1089,6 +1168,7 @@ $("sharedSplitForm").onsubmit = async (event) => {
 $("sharedSplitList").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-split-iou]"); if (!button || !user) return;
   const split = sharedSplits.find((item) => item.id === button.dataset.splitIou); if (!split) return;
+  if (!hasPlus && Number(split.participantCount) > 2) { promptPlus("Settle-up tracking for larger splits"); return; }
   const existing = debtItems.find((item) => item.splitId === split.id);
   if (existing) { alert("This shared cost is already in your personal IOU list."); return; }
   const share = Number(split.total) / Math.max(1, Number(split.participantCount));
@@ -1131,6 +1211,7 @@ $("startChallenge").onclick = async () => {
   } catch (error) { alert("Could not save the challenge. " + error.message); }
 };
 function exportCurrentCsv() {
+  if (!hasPlus) { promptPlus("CSV export"); return; }
   const [year, month] = monthSelect.value.split("-").map(Number);
   const rows = expenses.filter((entry) => { const date = new Date(entry.date); return date.getFullYear() === year && date.getMonth() + 1 === month; });
   const blob = new Blob([makeExpenseCsv(rows)], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob);
@@ -1159,6 +1240,7 @@ function makeRecapCanvas() {
   return canvas;
 }
 $("makeRecap").onclick = async () => {
+  if (!hasPlus) { promptPlus("Watermark-free shareable monthly recaps"); return; }
   const canvas = makeRecapCanvas(); const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png")); if (!blob) return;
   const file = new File([blob], "moonledger-recap-" + monthSelect.value + ".png", { type: "image/png" });
   if (navigator.share && navigator.canShare?.({ files: [file] })) { try { await navigator.share({ title: "My Moonledger recap", files: [file] }); return; } catch (error) { if (error.name === "AbortError") return; } }
