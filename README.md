@@ -43,7 +43,7 @@ Each pass is a one-time, permanent unlock tied to one exact Gmail address. Creat
 
 1. Generate a random 32-character uppercase hexadecimal ID on your own computer (for example, in a private terminal run `node -e "console.log(require('node:crypto').randomBytes(16).toString('hex').toUpperCase())"`). Keep the output private and send it only to the intended person.
 2. In Firestore, create a top-level collection named `accessCodes`, and a document whose ID is that code.
-3. Add fields: `active` (boolean `true`), `recipientEmail` (string with the recipient’s exact lowercase Gmail address), and optionally `note` (string, for your private label). Do not add `claimedBy` or `claimedAt`.
+3. Add fields: `active` (boolean `true`), `recipientEmail` (string with the recipient’s Gmail address exactly as shown in their Moonledger account), and optionally `note` (string, for your private label). Do not add `claimedBy` or `claimedAt`.
 4. Deploy the current Firestore rules. The rules prevent app users from listing or reading codes, creating codes, or claiming another person’s pass. Redeeming writes the claim and the user’s Plus entitlement atomically.
 5. The recipient signs in to Moonledger with that Gmail, opens **Me → Plus Pass**, enters the code, and selects **Unlock Plus**. A pass cannot be reused, and only the matching account can claim it.
 
