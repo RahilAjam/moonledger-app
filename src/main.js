@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import {
-  browserLocalPersistence, getAuth, GoogleAuthProvider, onAuthStateChanged,
+  browserLocalPersistence, getAuth, getRedirectResult, GoogleAuthProvider, onAuthStateChanged,
   setPersistence, signInWithPopup, signInWithRedirect, signOut
 } from "firebase/auth";
 import {
@@ -377,6 +377,10 @@ onAuthStateChanged(auth, (signedInUser) => {
       $("authError").textContent = "Moonledger needs a verified @gmail.com account. Sign in with Gmail to continue.";
     }
   }
+});
+getRedirectResult(auth).catch((error) => {
+  console.error("Google sign-in redirect failed.", error);
+  $("authError").textContent = error.message || "Google sign-in could not be completed. Please try again.";
 });
 window.addEventListener("online", () => { if (user) { $("cloudStatus").textContent = "Back online · syncing your changes."; $("accountCloudStatus").textContent = $("cloudStatus").textContent; } });
 window.addEventListener("offline", () => { if (user) { $("cloudStatus").textContent = "Offline mode · changes will sync when you reconnect."; $("accountCloudStatus").textContent = $("cloudStatus").textContent; } });

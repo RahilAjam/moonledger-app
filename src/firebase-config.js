@@ -2,7 +2,9 @@
 // Confirm these values in Firebase Console > Project settings > Your apps before deployment.
 export const firebaseConfig = {
   apiKey: "AIzaSyChOANwWo-JL89rPl0MxQQ4vOtdmWANiYE",
-  authDomain: "moonledger-2b6fb.firebaseapp.com",
+  // Use the Hosting domain for OAuth redirects so standalone mobile browsers
+  // keep auth state across the Google sign-in round trip.
+  authDomain: "moonledger-2b6fb.web.app",
   projectId: "moonledger-2b6fb",
   storageBucket: "moonledger-2b6fb.firebasestorage.app",
   messagingSenderId: "456255922118",
