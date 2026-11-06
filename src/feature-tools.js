@@ -1,3 +1,4 @@
+import { localDateKey } from "./archive.js";
 const CATEGORY_HINTS = [
   [/swiggy|zomato|food delivery|food order/, "Food delivery"],
   [/blinkit|zepto|bigbasket|grocery|groceries|vegetable|supermarket/, "Groceries"],
@@ -28,6 +29,6 @@ export function escapeCsv(value) {
   return /[",\n\r]/.test(text) ? '"' + text.replaceAll('"', '""') + '"' : text;
 }
 export function makeExpenseCsv(entries) {
-  const rows = [["Date", "Amount (INR)", "Category", "Note", "Payment method"], ...entries.map((entry) => [new Date(entry.date).toISOString().slice(0, 10), Number(entry.amount), entry.category, entry.note, entry.method])];
+  const rows = [["Date", "Amount (INR)", "Category", "Note", "Payment method"], ...entries.map((entry) => [localDateKey(entry.date), Number(entry.amount), entry.category, entry.note, entry.method])];
   return "\uFEFF" + rows.map((row) => row.map(escapeCsv).join(",")).join("\r\n");
 }

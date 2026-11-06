@@ -31,23 +31,47 @@ The app does not read UPI notifications. Users enter UPI, cash, and card expense
 
 The dashboard accepts short descriptions such as `250 Swiggy dinner` and fills a draft amount, note, payment method, and best-guess category for the user to review before saving. Frequent-spend buttons are generated from that account’s own recent entries. The daily spending guide divides the current month’s remaining budget by the number of days left; it is a planning aid, not a guarantee of affordability.
 
-## Free and Plus plans
+## Free, Plus, and gifted access
 
-Free includes expense tracking (add/edit/delete), categories, payment methods, dates and notes, one monthly budget with the daily guide, the basic monthly category report, up to five quick-add buttons, the evening reminder, both themes, guest mode, Google sync, up to three recurring bills/subscriptions, one savings circle, and a two-person split.
+Plan access comes from the Firebase Authentication custom claims `plan` and optional `planUntil`. Missing or expired claims mean Free. `plus`, `lifetime`, `friend`, and `owner` receive Plus access. The browser refreshes the ID token at sign-in, when the page becomes active, and periodically; after an admin change, sign out and back in for an immediate refresh. The app never checks a hard-coded email to grant Plus.
 
-Plus is currently an invite-only entitlement; Moonledger does not collect payments or start subscriptions. Existing expense records remain available. The app gates natural-language entry, pasted-message parsing, extra recurring items/circles, larger splits and personal IOU tracking, weekday insight charts, CSV export, and recap sharing behind Plus. Some broader roadmap ideas such as PDF export, statement import, multiple budgets, and subscription audits are not implemented yet and are not represented as working features.
+Free includes expense add/edit/delete, categories and payment methods, one monthly budget and daily guide, a basic monthly report, five quick-add buttons, three natural-language entries per day, an evening reminder, dark/light themes, up to three bills, one savings circle, a two-person split, and full CSV export of all expense history.
 
-### Issue a private Plus Pass
+Plus currently enables pasted SMS/UPI parsing (on-device only), unlimited smart entries and quick adds, unlimited bills and subscription entries, additional savings circles, splits with more than two people, personal IOU tracking, deeper current-month insights, and watermark-free recap cards. Features that are not implemented are listed in the account view as planned and remain unavailable even to Plus accounts. There are no payments in this version.
 
-Each pass is a one-time, permanent unlock tied to one exact Gmail address. Create it yourself in **Firebase Console → Firestore Database → Data**; never put real pass codes in GitHub, app source, screenshots, or a public message.
+### Grant or revoke a plan
 
-1. Generate a random 32-character uppercase hexadecimal ID on your own computer (for example, in a private terminal run `node -e "console.log(require('node:crypto').randomBytes(16).toString('hex').toUpperCase())"`). Keep the output private and send it only to the intended person.
-2. In Firestore, create a top-level collection named `accessCodes`, and a document whose ID is that code.
-3. Add fields: `active` (boolean `true`), `recipientEmail` (string with the recipient’s Gmail address exactly as shown in their Moonledger account), and optionally `note` (string, for your private label). Do not add `claimedBy` or `claimedAt`.
-4. Deploy the current Firestore rules. The rules prevent app users from listing or reading codes, creating codes, or claiming another person’s pass. Redeeming writes the claim and the user’s Plus entitlement atomically.
-5. The recipient signs in to Moonledger with that Gmail, opens **Me → Plus Pass**, enters the code, and selects **Unlock Plus**. A pass cannot be reused, and only the matching account can claim it.
+These administrator scripts use `firebase-admin` and the service account JSON only on your computer. Create a service account key in the Firebase/Google Cloud console, store it outside this repository, and never commit or share it. `.gitignore` excludes common key filenames.
 
-For your own account, create a pass addressed to your Gmail the same way. If a code is lost before redemption, delete the unused code in the Firebase Console and issue a new random one. After redemption, the entitlement remains on that account; deleting its claimed code does not revoke it.
+```sh
+export FIREBASE_SERVICE_ACCOUNT_KEY="/absolute/path/to/private-service-account.json"
+npm run plan:grant -- person@gmail.com friend
+npm run plan:grant -- person@gmail.com plus 2027-01-31T23:59:59+05:30
+npm run plan:revoke -- person@gmail.com
+```
+
+Use `plus`, `lifetime`, `friend`, or `owner` for Plus access. An optional expiry is an ISO date/time with its timezone. `revoke` removes the plan claims, and the user becomes Free after refreshing the ID token. The target user must already have signed in once so Firebase Authentication has an account record. Keep the service account key private: it has administrative access to the Firebase project.
+
+The previous Firestore Plus Pass/entitlement flow is retired because clients must not grant their own plan. Existing pass-based users need an admin claim grant using the scripts above.
+
+## Archived history
+
+Free users see expenses dated within the rolling 12-month window, using the device’s local calendar date. The exact boundary date remains visible. Older records stay in Firestore or guest storage and are treated as archived; nothing is deleted. Plus, lifetime, friend, and owner accounts see all months. Free users see the archived count and total and can open an informational “Unlock your history” dialog; payment is not implemented. The dialog describes a possible ₹99–149/year option or history access included with Plus.
+
+When the oldest visible month is within 30 days of archiving, the app shows a calm reminder with a one-tap full CSV download. It includes the remaining days (including the 14- and 7-day periods). Email reminders are a TODO. CSV export is free and always includes every expense, including archived entries, for signed-in and guest accounts.
+
+## Checks and deployment
+
+```sh
+npm test
+npm run test:rules
+npm run build
+npx firebase-tools deploy --only hosting,firestore:rules
+```
+
+The rules test command runs against the Firestore Emulator (a compatible Java runtime is required the first time the emulator is started). It checks per-user expense isolation, rejection of client-written plans, Plus-only larger shared splits, and expired claims. To test manually, sign in with a Free Gmail and confirm a three-person split is blocked by the app and rules; then grant a test account `friend`, sign out/in, and verify that it can create the split and view all history. Revoke it and sign out/in to verify Free access returns. Do not test grants with your production owner account unless you intend to change its access.
+
+This project has no separate lint or TypeScript check configured; `npm test` covers the plan/archive helpers and `npm run build` checks the production bundle. Firestore rules remain the security boundary for account-private and shared data; client gating is for user experience.
 
 ## Optional website ads (currently off)
 

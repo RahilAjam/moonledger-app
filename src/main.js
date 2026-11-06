@@ -6,11 +6,13 @@ import {
 } from "firebase/auth";
 import {
   addDoc, collection, deleteDoc, doc, getDoc, getFirestore, initializeFirestore,
-  onSnapshot, orderBy, persistentLocalCache, persistentMultipleTabManager, query,
+  onSnapshot, orderBy, persistentLocalCache, persistentMultipleTabManager, query, where,
   setDoc, updateDoc, writeBatch, serverTimestamp
 } from "firebase/firestore";
 import { firebaseConfig } from "./firebase-config.js";
 import { parseExpenseText, makeExpenseCsv } from "./feature-tools.js";
+import { hasPlus as planHasPlus, planLabel, PLUS_FEATURES, FREE_LIMITS } from "./plan.js";
+import { getArchiveSummary, getOldestUpcomingArchive, getVisibleExpenses, localDateKey } from "./archive.js";
 
 const { vapidKey, ...appOptions } = firebaseConfig;
 const app = initializeApp(appOptions);
@@ -29,8 +31,9 @@ const monthSelect = $("monthSelect");
 let db;
 let user = null;
 let guestMode = false;
-let hasPlus = false;
-let stopEntitlement = null;
+let planClaims = {};
+let planRefreshTimer = null;
+let planExpiryTimer = null;
 let editingExpenseId = null;
 let expenses = [];
 let budgets = {};
@@ -79,69 +82,92 @@ function userCollection(name) {
   return collection(getDatabase(), "users", user.uid, name);
 }
 
-function plusActive(data) {
-  if (data?.tier !== "plus") return false;
-  return !data.expiresAt || data.expiresAt.toDate?.().getTime() > Date.now();
-}
+function hasPlus() { return planHasPlus(planClaims); }
 
 function syncPlanUi() {
-  const label = hasPlus ? "Plus · unlocked" : "Free plan";
+  const label = hasPlus() ? planLabel(planClaims) + " · unlocked" : "Free plan";
   const status = $("planStatus");
   if (status) status.textContent = label;
   const badge = $("planBadge");
-  if (badge) badge.textContent = hasPlus ? "PLUS" : "FREE";
-  const redeem = $("redeemPlusForm");
-  if (redeem) redeem.hidden = hasPlus || !user;
+  if (badge) badge.textContent = hasPlus() ? planLabel(planClaims).toUpperCase() : "FREE";
+  if (typeof render === "function") render();
 }
 
 const planCard = document.createElement("section");
 planCard.className = "plan-card";
-planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> expenses, budgets, safe-to-spend, monthly category reports, five quick adds, reminders, themes, up to three bills, one circle, and two-person splits.</p><p><strong>Plus:</strong> effortless capture, deeper insights, more bills and circles, larger splits, IOUs, CSV export, and shareable recaps.</p><form id="redeemPlusForm" class="plus-redeem"><label for="plusPassCode">Have a personal Plus Pass?</label><div><input id="plusPassCode" type="text" maxlength="32" autocomplete="off" autocapitalize="characters" placeholder="Enter your 32-character code" aria-label="Plus Pass code"><button class="quiet-btn" type="submit">Unlock Plus</button></div><small>Passes are one-use and tied to the Gmail address they were issued for.</small></form><p class="plan-status" id="plusPassStatus" role="status" aria-live="polite"></p>';
+planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p>';
 $("accountView").prepend(planCard);
 
 const plusPrompt = document.createElement("div");
 plusPrompt.className = "overlay"; plusPrompt.id = "plusPrompt"; plusPrompt.setAttribute("role", "dialog"); plusPrompt.setAttribute("aria-modal", "true");
-plusPrompt.innerHTML = '<section class="modal plus-modal"><span class="plan-badge">MOONLEDGER PLUS</span><h2>Make ' + ' <span id="plusPromptFeature">this feature</span> ' + 'easier</h2><p>Plus adds time-saving tools, deeper insights, and more ways to share. Your expense history stays yours.</p><div class="hint">Plus access is currently available by personal invite code. No subscription or payment is set up in this version.</div><div class="modal-actions"><button class="primary" id="closePlusPrompt" type="button">Got it</button></div></section>';
+plusPrompt.innerHTML = '<section class="modal plus-modal"><span class="plan-badge">MOONLEDGER PLUS</span><h2>Make <span id="plusPromptFeature">this feature</span> easier</h2><p id="plusPromptDescription">Plus adds time-saving tools, deeper insights, and more ways to share. Your expense history stays yours.</p><div class="hint">Plus access is assigned by Moonledger administrators. Payments are not set up in this version.</div><div class="modal-actions"><button class="primary" id="closePlusPrompt" type="button">Got it</button></div></section>';
 document.body.append(plusPrompt);
 
-function watchEntitlement() {
-  stopEntitlement?.(); stopEntitlement = null; hasPlus = false; syncPlanUi();
-  if (!user) return;
-  stopEntitlement = onSnapshot(doc(getDatabase(), "users", user.uid, "entitlements", "plus"), (snapshot) => {
-    hasPlus = snapshot.exists() && plusActive(snapshot.data());
-    syncPlanUi();
-    renderQuickAdds(); renderInsights();
-  }, (error) => console.warn("Plan status could not be loaded.", error));
+async function refreshPlan(forceRefresh = false) {
+  if (!user) { planClaims = {}; syncPlanUi(); return; }
+  const previousPlan = hasPlus();
+  try {
+    const token = await user.getIdTokenResult(forceRefresh);
+    planClaims = token.claims || {};
+    if (!planHasPlus(planClaims)) planClaims = { ...planClaims, plan: "free" };
+    clearTimeout(planExpiryTimer);
+    if (hasPlus() && typeof planClaims.planUntil === "number") {
+      const checkPlanExpiry = () => {
+        if (planHasPlus(planClaims)) {
+          planExpiryTimer = setTimeout(checkPlanExpiry, Math.min(planClaims.planUntil - Date.now(), 2147480000));
+        } else {
+          planClaims = { ...planClaims, plan: "free" };
+          syncPlanUi(); render();
+          if (stopChallenges) watchChallenges();
+        }
+      };
+      checkPlanExpiry();
+    }
+    if (previousPlan !== hasPlus() && stopChallenges) watchChallenges();
+    syncPlanUi(); render();
+  } catch (error) {
+    console.warn("Plan status could not be refreshed; retaining a still-valid cached plan or using Free.", error);
+    if (!planHasPlus(planClaims)) planClaims = {};
+    syncPlanUi(); render();
+  }
 }
 
-function promptPlus(feature) {
-  $("plusPromptFeature").textContent = feature;
+function promptPlus(feature, description = "Plus adds time-saving tools, deeper insights, and more ways to share. Your expense history stays yours.") {
+  const config = PLUS_FEATURES[feature];
+  $("plusPromptFeature").textContent = config?.label || feature;
+  if (config && !config.available) description = "This Plus feature is planned, but it is not available in Moonledger yet.";
+  $("plusPromptDescription").textContent = description;
   $("plusPrompt").classList.add("open");
 }
 
-$("closePlusPrompt").onclick = () => $("plusPrompt").classList.remove("open");
-$("redeemPlusForm").onsubmit = async (event) => {
-  event.preventDefault();
-  const code = $("plusPassCode").value.trim().toUpperCase();
-  const status = $("plusPassStatus");
-  if (!user) { status.textContent = "Sign in with Google before redeeming a Plus Pass."; return; }
-  if (!/^[A-F0-9]{32}$/.test(code)) { status.textContent = "Enter the 32-character Plus Pass from your invitation."; return; }
-  status.textContent = "Checking your pass…";
-  try {
-    const batch = writeBatch(getDatabase());
-    batch.update(doc(getDatabase(), "accessCodes", code), { claimedBy: user.uid, claimedAt: serverTimestamp() });
-    batch.set(doc(getDatabase(), "users", user.uid, "entitlements", "plus"), {
-      tier: "plus", accessCode: code, grantedAt: serverTimestamp()
-    });
-    await batch.commit();
-    $("plusPassCode").value = "";
-    status.textContent = "Plus is unlocked for this account. Enjoy every feature.";
-  } catch (error) {
-    console.warn("Plus Pass redemption failed.", error);
-    status.textContent = "That pass could not be redeemed. Check that it matches this Gmail account and has not been used.";
-  }
-};
+const archiveUi = document.createElement("section");
+archiveUi.className = "archive-ui";
+archiveUi.innerHTML = '<div id="archiveReminder" class="archive-reminder" hidden><div><strong>Keep a copy of your older history</strong><p id="archiveReminderText"></p></div><button type="button" id="archiveDownloadReminder">Download my data</button></div><div id="archiveSummary" class="archive-summary" hidden><div><strong>Archived history</strong><span id="archiveSummaryText"></span></div><button type="button" id="unlockHistory">Unlock your history</button></div>';
+$("cloudStatus").after(archiveUi);
+const archiveModal = document.createElement("div");
+archiveModal.className = "overlay"; archiveModal.id = "archiveModal"; archiveModal.setAttribute("role", "dialog"); archiveModal.setAttribute("aria-modal", "true");
+archiveModal.innerHTML = '<section class="modal"><h2>Your archived history stays yours</h2><p>Older expenses remain safely stored. Free accounts see the latest 12 months in Moonledger. Full history access may be offered for ₹99–149 per year or included with Plus.</p><div class="hint">Unlocking history is coming soon. You can download all your expenses at any time, including archived entries.</div><div class="modal-actions"><button class="primary" id="downloadArchiveCsv" type="button">Download all my data</button><button class="cancel" id="closeArchiveModal" type="button">Close</button></div></section>';
+document.body.append(archiveModal);
+$("unlockHistory").onclick = () => archiveModal.classList.add("open");
+$("closeArchiveModal").onclick = () => archiveModal.classList.remove("open");
+$("downloadArchiveCsv").onclick = () => { exportAllCsv(); archiveModal.classList.remove("open"); };
+$("archiveDownloadReminder").onclick = exportAllCsv;
 
+function consumeSmartEntry() {
+  if (hasPlus()) return true;
+  const accountKey = user?.uid || (guestMode ? "guest" : "visitor");
+  const today = currentDayKey();
+  const key = "moonledger-smart-entry-" + accountKey + "-" + today;
+  const used = Number(localStorage.getItem(key) || 0);
+  if (used >= FREE_LIMITS.smartEntriesPerDay) {
+    promptPlus("unlimitedSmartEntry", "You’ve used today’s " + FREE_LIMITS.smartEntriesPerDay + " free smart entries. Plus removes the daily limit.");
+    return false;
+  }
+  localStorage.setItem(key, String(used + 1));
+  return true;
+}
+
+$("closePlusPrompt").onclick = () => $("plusPrompt").classList.remove("open");
 function readGuestData() {
   try {
     const data = JSON.parse(localStorage.getItem(guestDataKey) || "{}");
@@ -246,8 +272,9 @@ function saveGuestExpenses() {
   const data = readGuestData(); data.expenses = expenses; writeGuestData(data);
 }
 function setGuestMode() {
+  clearInterval(planRefreshTimer); clearTimeout(planExpiryTimer);
   guestMode = true; user = null; expenses = readGuestData().expenses; budgets = readGuestData().budgets;
-  hasPlus = false; syncPlanUi();
+  planClaims = {}; syncPlanUi();
   const guestData = readGuestData(); recurringItems = guestData.recurringItems; debtItems = guestData.debtItems; noSpendDates = guestData.noSpendDates;
   joinedChallenges = []; challengeMemberData = []; stopChallengeListeners();
   gate.hidden = true; shell.hidden = false; mobileNav.hidden = false; $("signOutBtn").hidden = false;
@@ -313,7 +340,7 @@ async function syncGuestData() {
       pending.expenses.slice(start, start + 400).forEach((entry) => {
         const safeId = String(entry.id || crypto.randomUUID()).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 100);
         const { amount, method: paymentMethod, category, note, date } = entry;
-        batch.set(doc(userCollection("expenses"), "guest_" + safeId), { amount: Number(amount), method: paymentMethod, category, note: String(note || "").slice(0, 80), date: new Date(date).toISOString() });
+        batch.set(doc(userCollection("expenses"), "guest_" + safeId), { amount: Number(amount), method: paymentMethod, category, note: String(note || "").slice(0, 80), date: localDateKey(date) || dateInputValue() });
       });
       await batch.commit();
     }
@@ -357,7 +384,7 @@ async function syncGuestData() {
 function currentMonthTotals() {
   const [year, month] = (monthSelect.value || "").split("-").map(Number);
   const spent = expenses.filter((entry) => {
-    const date = new Date(entry.date);
+    const date = expenseDate(entry.date);
     return date.getFullYear() === year && date.getMonth() + 1 === month;
   }).reduce((sum, entry) => sum + Number(entry.amount), 0);
   return { month: monthSelect.value, budget: Number(budgets[monthSelect.value] || 0), spent };
@@ -388,11 +415,21 @@ function watchChallenges() {
   stopChallengeListeners();
   if (!user) return;
   stopChallenges = onSnapshot(userCollection("challenges"), async (snapshot) => {
-    joinedChallenges = await Promise.all(snapshot.docs.map(async (entry) => {
-      const metadata = entry.data();
-      const group = await getDoc(challengeRef(entry.id));
-      return group.exists() ? { id: entry.id, name: metadata.name || group.data().name || "Savings circle", inviteCode: metadata.inviteCode || "" } : null;
-    }));
+    let visibleCircleDocs = snapshot.docs;
+    if (snapshot.docs.length) {
+      const slotRef = doc(userCollection("circleAccess"), "freeSlot");
+      const slot = await getDoc(slotRef).catch(() => null);
+      const slotCircleId = slot?.exists() ? slot.data().circleId : snapshot.docs[0].id;
+      if (slot && !slot.exists()) await setDoc(slotRef, { circleId: slotCircleId, createdAt: new Date().toISOString() }).catch((error) => console.warn("Circle access setup did not complete.", error));
+      if (!hasPlus()) visibleCircleDocs = snapshot.docs.filter((entry) => entry.id === slotCircleId);
+    }
+    joinedChallenges = (await Promise.all(visibleCircleDocs.map(async (entry) => {
+      try {
+        const metadata = entry.data();
+        const group = await getDoc(challengeRef(entry.id));
+        return group.exists() ? { id: entry.id, name: metadata.name || group.data().name || "Savings circle", inviteCode: metadata.inviteCode || "" } : null;
+      } catch (error) { console.warn("A savings circle is not available on this plan or connection.", error); return null; }
+    }))).filter(Boolean);
     joinedChallenges = joinedChallenges.filter(Boolean);
     watchChallengeMembers();
     watchSharedSplits();
@@ -419,7 +456,9 @@ function watchSharedSplits() {
   stopSharedSplitListeners.forEach((stop) => stop()); stopSharedSplitListeners = []; sharedSplits = [];
   if (!user || !joinedChallenges.length) { renderTools(); return; }
   joinedChallenges.forEach((challenge) => {
-    const stop = onSnapshot(collection(getDatabase(), "challenges", challenge.id, "splits"), (snapshot) => {
+    const splits = collection(getDatabase(), "challenges", challenge.id, "splits");
+    const splitQuery = hasPlus() ? splits : query(splits, where("participantCount", "<=", 2));
+    const stop = onSnapshot(splitQuery, (snapshot) => {
       sharedSplits = [...sharedSplits.filter((row) => row.challengeId !== challenge.id), ...snapshot.docs.map((entry) => ({ id: entry.id, challengeId: challenge.id, circleName: challenge.name, ...entry.data() }))];
       renderTools();
     }, (error) => console.warn("Shared circle costs could not load.", error));
@@ -457,7 +496,7 @@ function closeChallengeModals() {
 $("challengeCreateForm").onsubmit = async (event) => {
   event.preventDefault();
   if (!user) return;
-  if (!hasPlus && joinedChallenges.length >= 1) { promptPlus("More than one savings circle"); return; }
+  if (!hasPlus() && joinedChallenges.length >= FREE_LIMITS.savingsCircles) { promptPlus("moreCircles"); return; }
   const name = $("challengeName").value.trim().slice(0, 40) || "Savings circle";
   const id = doc(collection(getDatabase(), "challenges")).id;
   const inviteCode = crypto.randomUUID().replace(/-/g, "").toUpperCase();
@@ -471,6 +510,10 @@ $("challengeCreateForm").onsubmit = async (event) => {
   const group = challengeRef(id);
   const summary = currentMonthTotals();
   const batch = writeBatch(getDatabase());
+  const circleSlotRef = doc(userCollection("circleAccess"), "freeSlot");
+  const circleSlot = await getDoc(circleSlotRef).catch((error) => { $("challengeCreateError").textContent = "Could not check your circle access: " + error.message; return null; });
+  if (!circleSlot) return;
+  if (!circleSlot.exists()) batch.set(circleSlotRef, { circleId: id, createdAt: new Date().toISOString() });
   batch.set(rateRef, { count: nextCount, windowStartedAt: windowActive ? previous.windowStartedAt : serverTimestamp(), updatedAt: serverTimestamp() });
   batch.set(group, { name, ownerId: user.uid, createdAt: new Date().toISOString() });
   batch.set(doc(getDatabase(), "challengeInvites", inviteCode), { challengeId: id, name, createdBy: user.uid });
@@ -486,13 +529,16 @@ $("challengeCreateForm").onsubmit = async (event) => {
 $("challengeJoinForm").onsubmit = async (event) => {
   event.preventDefault();
   if (!user) return;
-  if (!hasPlus && joinedChallenges.length >= 1) { promptPlus("More than one savings circle"); return; }
+  if (!hasPlus() && joinedChallenges.length >= FREE_LIMITS.savingsCircles) { promptPlus("moreCircles"); return; }
   const code = $("challengeCode").value.trim().toUpperCase();
   try {
     const invitation = await getDoc(doc(getDatabase(), "challengeInvites", code));
     if (!invitation.exists()) { $("challengeJoinError").textContent = "That invite code wasn’t found. Check it and try again."; return; }
     const details = invitation.data();
     const batch = writeBatch(getDatabase());
+    const circleSlotRef = doc(userCollection("circleAccess"), "freeSlot");
+    const circleSlot = await getDoc(circleSlotRef);
+    if (!circleSlot.exists()) batch.set(circleSlotRef, { circleId: details.challengeId, createdAt: new Date().toISOString() });
     const summary = currentMonthTotals();
     batch.set(membershipRef(details.challengeId), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), inviteCode: code, joinedAt: new Date().toISOString() });
     batch.set(memberRef(details.challengeId, user.uid, summary.month), { displayName: (user.displayName || user.email?.split("@")[0] || "You").slice(0, 40), ...summary, updatedAt: new Date().toISOString() });
@@ -507,19 +553,22 @@ $("createChallenge").onclick = () => $("challengeCreateModal").classList.add("op
 $("joinChallenge").onclick = () => $("challengeJoinModal").classList.add("open");
 
 function showSignedOut() {
+  clearInterval(planRefreshTimer); clearTimeout(planExpiryTimer);
   gate.hidden = false;
   shell.hidden = true;
   mobileNav.hidden = true;
   $("signOutBtn").hidden = true;
   $("guestBanner").hidden = true;
   guestMode = false;
-  stopEntitlement?.(); stopEntitlement = null; hasPlus = false; syncPlanUi();
+  planClaims = {}; syncPlanUi();
 }
 
-function showSignedIn(signedInUser) {
+async function showSignedIn(signedInUser) {
   user = signedInUser;
   guestMode = false;
-  watchEntitlement();
+  await refreshPlan(true);
+  clearInterval(planRefreshTimer);
+  planRefreshTimer = setInterval(() => refreshPlan(false), 30 * 60 * 1000);
   gate.hidden = true;
   shell.hidden = false;
   mobileNav.hidden = false;
@@ -629,15 +678,16 @@ function escapeHtml(value) {
 }
 
 function currentDayKey(date = new Date()) { return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0"); }
+function expenseDate(value) { const key = localDateKey(value); return key ? new Date(key + "T12:00:00") : new Date(NaN); }
 function renderTools() {
   const due = recurringItems.filter((item) => item.enabled !== false).map((item) => {
     const now = new Date(); const thisDue = new Date(now.getFullYear(), now.getMonth(), Math.min(Number(item.dueDay) || 1, new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()), 12);
     if (thisDue < new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12)) thisDue.setMonth(thisDue.getMonth() + 1);
     return { ...item, nextDue: thisDue, days: Math.ceil((thisDue - new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12)) / 86400000) };
   }).sort((a, b) => a.days - b.days);
-  checkLocalBillReminders(due);
+  checkLocalBillReminders(due.filter((item) => hasPlus() || item.kind !== "subscription"));
   const recurringList = $("recurringList");
-  if (recurringList) recurringList.innerHTML = due.length ? due.map((item) => '<div class="tool-row"><div><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.kind === "subscription" ? "Subscription" : "Bill") + ' · due ' + item.nextDue.toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + ' · ' + (item.days === 0 ? "today" : item.days + " days") + '</small></div><b>' + money(item.amount) + '</b><button class="tool-delete" data-tool-delete="recurring" data-id="' + escapeHtml(item.id) + '" aria-label="Delete ' + escapeHtml(item.name) + '">×</button></div>').join("") : '<div class="empty">No bills or subscriptions yet.</div>';
+  if (recurringList) recurringList.innerHTML = due.length ? due.map((item) => '<div class="tool-row"><div><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.kind === "subscription" ? "Subscription" : "Bill") + ' · due ' + item.nextDue.toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + ' · ' + (item.days === 0 ? "today" : item.days + " days") + '</small></div><b>' + money(item.amount) + '</b><button class="tool-delete" data-tool-delete="recurring" data-kind="' + escapeHtml(item.kind || "bill") + '" data-id="' + escapeHtml(item.id) + '" aria-label="Delete ' + escapeHtml(item.name) + '">×</button></div>').join("") : '<div class="empty">No bills or subscriptions yet.</div>';
   const circleSelect = $("sharedSplitCircle");
   if (circleSelect) {
     const selected = circleSelect.value;
@@ -672,12 +722,12 @@ function checkLocalBillReminders(items) {
 
 function renderInsights() {
   const [year, month] = (monthSelect.value || "").split("-").map(Number);
-  const items = expenses.filter((entry) => { const date = new Date(entry.date); return date.getFullYear() === year && date.getMonth() + 1 === month; });
+  const items = getVisibleExpenses(expenses, hasPlus()).filter((entry) => localDateKey(entry.date).slice(0, 7) === monthSelect.value);
   const deliveryCount = items.filter((entry) => entry.category === "Food delivery").length;
   const biggest = items.slice().sort((a, b) => Number(b.amount) - Number(a.amount))[0];
-  const weekendSpend = items.filter((entry) => [0, 6].includes(new Date(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
-  const weekdaySpend = items.filter((entry) => ![0, 6].includes(new Date(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
-  $("insightText").textContent = hasPlus
+  const weekendSpend = items.filter((entry) => [0, 6].includes(expenseDate(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
+  const weekdaySpend = items.filter((entry) => ![0, 6].includes(expenseDate(entry.date).getDay())).reduce((sum, entry) => sum + Number(entry.amount), 0);
+  $("insightText").textContent = hasPlus()
     ? weekendSpend > weekdaySpend && items.length >= 4 ? "Your weekend spending is higher than your weekday spending so far this month." : deliveryCount >= 3 ? "You ordered food " + deliveryCount + " times this month. Small changes can make a noticeable difference." : biggest ? "Your biggest logged spend is " + (biggest.note || biggest.category) + " at " + money(biggest.amount) + "." : "Add a few spends and Moonledger will find a useful pattern for you."
     : items.length ? "You’ve logged " + items.length + " spends this month. Your category breakdown is in Reports." : "Add a few spends and Moonledger will show your monthly category breakdown here.";
   let streak = 0; const today = new Date(); const streakStart = noSpendDates.includes(currentDayKey(today)) ? 0 : 1;
@@ -692,15 +742,15 @@ function renderQuickAdds() {
   if (!container) return;
   const cutoff = Date.now() - 90 * 86400000;
   const grouped = new Map();
-  expenses.filter((entry) => entry.note && Number(entry.amount) > 0 && new Date(entry.date).getTime() >= cutoff).forEach((entry) => {
+  expenses.filter((entry) => entry.note && Number(entry.amount) > 0 && expenseDate(entry.date).getTime() >= cutoff).forEach((entry) => {
     const key = [entry.note.trim().toLowerCase(), Number(entry.amount), entry.category, entry.method].join("|");
     const item = grouped.get(key) || { ...entry, count: 0, latest: 0 };
-    item.count += 1; item.latest = Math.max(item.latest, new Date(entry.date).getTime());
+    item.count += 1; item.latest = Math.max(item.latest, expenseDate(entry.date).getTime());
     grouped.set(key, item);
   });
   const common = Array.from(grouped.values()).sort((a, b) => b.count - a.count || b.latest - a.latest);
   const preferred = readQuickPresets();
-  const quicks = [...preferred, ...common].filter((entry, index, all) => all.findIndex((item) => item.note?.toLowerCase() === entry.note?.toLowerCase() && Number(item.amount) === Number(entry.amount)) === index).slice(0, hasPlus ? 20 : 5);
+  const quicks = [...preferred, ...common].filter((entry, index, all) => all.findIndex((item) => item.note?.toLowerCase() === entry.note?.toLowerCase() && Number(item.amount) === Number(entry.amount)) === index).slice(0, hasPlus() ? Infinity : FREE_LIMITS.quickAdds);
   container.replaceChildren();
   $("quickAdds").hidden = quicks.length === 0;
   quicks.forEach((entry) => {
@@ -742,36 +792,49 @@ function guessCategory(text) {
 }
 
 function ensureExpenseMonthOptions(entries) {
-  const known = new Set(Array.from(monthSelect.options, (option) => option.value));
-  entries.forEach((entry) => {
-    if (!entry.date) return;
-    const date = new Date(entry.date);
-    const value = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
-    if (!known.has(value)) {
-      const option = document.createElement("option");
-      option.value = value; option.textContent = date.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-      monthSelect.add(option); known.add(value);
-    }
-  });
   const selected = monthSelect.value;
-  Array.from(monthSelect.options).sort((a, b) => b.value.localeCompare(a.value)).forEach((option) => monthSelect.append(option));
-  monthSelect.value = selected;
+  const values = new Set([currentDayKey().slice(0, 7)]);
+  entries.forEach((entry) => { const value = localDateKey(entry.date).slice(0, 7); if (/^\d{4}-\d{2}$/.test(value)) values.add(value); });
+  monthSelect.replaceChildren(...Array.from(values).sort((a, b) => b.localeCompare(a)).map((value) => {
+    const option = document.createElement("option"); option.value = value;
+    const [year, month] = value.split("-").map(Number);
+    option.textContent = new Date(year, month - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    return option;
+  }));
+  monthSelect.value = values.has(selected) ? selected : currentDayKey().slice(0, 7);
+  if (selected !== monthSelect.value && user) watchBudget(monthSelect.value);
+}
+
+function renderArchiveInfo() {
+  const summary = getArchiveSummary(expenses);
+  const summaryRow = $("archiveSummary");
+  summaryRow.hidden = hasPlus() || summary.count === 0;
+  $("archiveSummaryText").textContent = summary.count + (summary.count === 1 ? " expense" : " expenses") + " · " + money(summary.total);
+  const notice = getOldestUpcomingArchive(expenses);
+  // TODO: Add optional email reminders at the same 30/14/7-day milestones.
+  const reminder = $("archiveReminder");
+  reminder.hidden = hasPlus() || !notice;
+  if (notice) {
+    const lead = notice.days > 14 ? 30 : notice.days > 7 ? 14 : 7;
+    const month = new Date(localDateKey(notice.expense.date) + "T12:00:00").toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+    $("archiveReminderText").textContent = month + " will move to Archived history in " + notice.days + " day" + (notice.days === 1 ? "" : "s") + ". Your full CSV always includes it.";
+    reminder.dataset.milestone = String(lead);
+  }
 }
 
 function renderContent() {
-  ensureExpenseMonthOptions(expenses);
+  const visibleExpenses = getVisibleExpenses(expenses, hasPlus());
+  renderArchiveInfo();
+  ensureExpenseMonthOptions(visibleExpenses);
   if (!monthSelect.value) return;
   renderQuickAdds();
   const parts = monthSelect.value.split("-").map(Number);
-  const monthItems = expenses.filter((entry) => {
-    const date = new Date(entry.date);
-    return date.getFullYear() === parts[0] && date.getMonth() + 1 === parts[1];
-  });
+  const monthItems = visibleExpenses.filter((entry) => localDateKey(entry.date).slice(0, 7) === monthSelect.value);
   const total = monthItems.reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("monthTotal").textContent = money(total);
   $("countTotal").textContent = String(monthItems.length);
-  const week = expenses.filter((entry) => {
-    const age = Date.now() - new Date(entry.date).getTime();
+  const week = visibleExpenses.filter((entry) => {
+    const age = Date.now() - expenseDate(entry.date).getTime();
     return age >= 0 && age < 7 * 86400000;
   }).reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("weekTotal").textContent = money(week);
@@ -780,11 +843,11 @@ function renderContent() {
     : "Start with your first expense";
   const todayKey = currentDayKey();
   const isHome = currentView === "Overview";
-  let visibleItems = isHome ? monthItems.filter((entry) => currentDayKey(new Date(entry.date)) === todayKey) : monthItems;
+  let visibleItems = isHome ? monthItems.filter((entry) => localDateKey(entry.date) === todayKey) : monthItems;
   if (currentView === "Expenses" && expenseMethodFilter !== "all") visibleItems = visibleItems.filter((entry) => entry.method === expenseMethodFilter);
   if (currentView === "Expenses" && expenseCategoryFilter !== "all") visibleItems = visibleItems.filter((entry) => entry.category === expenseCategoryFilter);
   if (currentView === "Expenses" && expenseSearchText) visibleItems = visibleItems.filter((entry) => (entry.note + " " + entry.category + " " + entry.method).toLowerCase().includes(expenseSearchText));
-  const sorted = visibleItems.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  const sorted = visibleItems.slice().sort((a, b) => expenseDate(b.date) - expenseDate(a.date));
   const list = $("expenseList");
   list.replaceChildren();
   if (!sorted.length) list.innerHTML = isHome
@@ -793,17 +856,17 @@ function renderContent() {
   const listEntries = sorted.slice(0, showAll ? 100 : isHome ? 4 : 40);
   let lastDay = "";
   listEntries.forEach((entry) => {
-    const day = currentDayKey(new Date(entry.date));
+    const day = localDateKey(entry.date);
     if (!isHome && day !== lastDay) {
-      const dayItems = listEntries.filter((item) => currentDayKey(new Date(item.date)) === day);
+      const dayItems = listEntries.filter((item) => localDateKey(item.date) === day);
       const dayTotal = dayItems.reduce((sum, item) => sum + Number(item.amount), 0);
       const group = document.createElement("div"); group.className = "day-group";
-      group.innerHTML = '<div class="day-heading"><span>' + new Date(entry.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" }) + '</span><span>' + money(dayTotal) + '</span></div>';
+      group.innerHTML = '<div class="day-heading"><span>' + expenseDate(entry.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" }) + '</span><span>' + money(dayTotal) + '</span></div>';
       list.append(group); lastDay = day;
     }
     const row = document.createElement("div");
     row.className = "expense";
-    row.innerHTML = '<div class="eicon">' + (icons[entry.category] || "·") + '</div><div class="edesc"><strong>' + escapeHtml(entry.note || entry.category) + '</strong><small>' + new Date(entry.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + " · " + escapeHtml(entry.method) + " · " + escapeHtml(entry.category) + '</small></div><div class="eamount">−' + money(entry.amount) + '</div><div class="expense-actions"><button type="button" data-expense-action="edit" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Edit ' + escapeHtml(entry.note || entry.category) + '">Edit</button><button type="button" data-expense-action="delete" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Delete ' + escapeHtml(entry.note || entry.category) + '">Delete</button></div>';
+    row.innerHTML = '<div class="eicon">' + (icons[entry.category] || "·") + '</div><div class="edesc"><strong>' + escapeHtml(entry.note || entry.category) + '</strong><small>' + expenseDate(entry.date).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) + " · " + escapeHtml(entry.method) + " · " + escapeHtml(entry.category) + '</small></div><div class="eamount">−' + money(entry.amount) + '</div><div class="expense-actions"><button type="button" data-expense-action="edit" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Edit ' + escapeHtml(entry.note || entry.category) + '">Edit</button><button type="button" data-expense-action="delete" data-expense-id="' + escapeHtml(entry.id) + '" aria-label="Delete ' + escapeHtml(entry.note || entry.category) + '">Delete</button></div>';
     if (!isHome) list.lastElementChild?.append(row); else list.append(row);
   });
   const totals = {};
@@ -819,10 +882,10 @@ function renderContent() {
   $("reportDonut").style.background = arcs.length ? "conic-gradient(" + arcs.join(",") + ")" : "conic-gradient(#ffffff18 0 100%)";
   $("reportTotal").textContent = money(total);
   const byWeekday = Array.from({ length: 7 }, () => 0);
-  monthItems.forEach((entry) => { byWeekday[new Date(entry.date).getDay()] += Number(entry.amount); });
+  monthItems.forEach((entry) => { byWeekday[expenseDate(entry.date).getDay()] += Number(entry.amount); });
   const maxDay = Math.max(...byWeekday, 1);
   $("weeklyBars").innerHTML = byWeekday.map((amount, day) => '<div class="week-bar ' + (day === 0 || day === 6 ? "weekend" : "") + '" aria-label="' + ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day] + " " + money(amount) + '"><i style="height:' + Math.max(4, amount / maxDay * 65) + 'px"></i><small>' + ["S", "M", "T", "W", "T", "F", "S"][day] + '</small></div>').join("");
-  $("weeklyBars").hidden = !hasPlus;
+  $("weeklyBars").hidden = !hasPlus();
 }
 
 function render() { renderContent(); updateBudget(); syncChallengeSummary(); renderLeaderboard(); renderTools(); renderInsights(); }
@@ -831,10 +894,7 @@ function updateBudget() {
   const month = monthSelect.value;
   const parts = month.split("-").map(Number);
   const budget = Number(budgets[month] || 0);
-  const spent = expenses.filter((entry) => {
-    const date = new Date(entry.date);
-    return date.getFullYear() === parts[0] && date.getMonth() + 1 === parts[1];
-  }).reduce((sum, entry) => sum + Number(entry.amount), 0);
+  const spent = getVisibleExpenses(expenses, hasPlus()).filter((entry) => localDateKey(entry.date).slice(0, 7) === month).reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("budgetCaption").textContent = new Date(parts[0], parts[1] - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   $("leaderPeriod").textContent = $("budgetCaption").textContent;
   const now = new Date();
@@ -875,13 +935,10 @@ function updateBudget() {
 }
 
 function dateInputValue(value = new Date()) {
-  const date = new Date(value);
+  const date = expenseDate(value);
   return [date.getFullYear(), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0")].join("-");
 }
-function dateFromInput(value) {
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day, 12).toISOString();
-}
+function dateFromInput(value) { return value; }
 function openExpenseModal(entry = null) {
   editingExpenseId = entry?.id || null;
   $("expenseForm").reset();
@@ -926,10 +983,10 @@ $("expenseList").onclick = async (event) => {
 };
 $("quickEntryForm").onsubmit = (event) => {
   event.preventDefault();
-  if (!hasPlus) { promptPlus("Natural-language quick entry"); return; }
   const raw = $("quickEntryText").value.trim();
   const parsed = parseExpenseText(raw);
   if (!parsed) { $("quickEntryStatus").textContent = "Add an amount, like ‘250 Swiggy dinner’."; return; }
+  if (!consumeSmartEntry()) return;
   $("quickEntryStatus").textContent = "Filled a draft — check the details, then save.";
   openExpenseModal({ ...parsed, date: new Date().toISOString() });
 };
@@ -938,7 +995,7 @@ function openSharedTextIfPresent() {
   if (!sharedText || (!user && !guestMode)) return;
   const parsed = parseExpenseText(sharedText);
   if (parsed) {
-    if (!hasPlus) { promptPlus("Parsing a shared payment message"); sharedText = ""; return; }
+    if (!hasPlus()) { promptPlus("messageParsing"); sharedText = ""; return; }
     $("quickEntryStatus").textContent = "Shared message parsed on this device. Review the draft before saving.";
     openExpenseModal({ ...parsed, date: new Date().toISOString() });
   } else {
@@ -949,7 +1006,7 @@ function openSharedTextIfPresent() {
   sharedText = "";
 }
 $("parseSms").onclick = () => {
-  if (!hasPlus) { promptPlus("On-device SMS and UPI message parsing"); return; }
+  if (!hasPlus()) { promptPlus("messageParsing"); return; }
   const raw = $("smsText").value;
   const parsed = parseExpenseText(raw);
   if (!parsed) { $("smsStatus").textContent = "Couldn’t find an amount. Check the message and fill the form yourself."; return; }
@@ -1085,7 +1142,7 @@ $("backupFile").onchange = async (event) => {
       const amount = Number(entry.amount);
       const category = validCategories.includes(entry.category) ? entry.category : "Other";
       const methodValue = validMethods.includes(entry.method) ? entry.method : "UPI";
-      const date = new Date(entry.date || Date.now()).toISOString();
+      const date = localDateKey(entry.date || Date.now()) || dateInputValue();
       if (!(amount > 0)) throw new Error("A backup entry has an invalid amount.");
       const stableId = String(entry.id || (date + "-" + amount + "-" + index)).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
       return { id: "backup_" + stableId, data: { amount, method: methodValue, category, note: String(entry.note || "").slice(0, 80), date, importedFromPrototype: true } };
@@ -1116,7 +1173,8 @@ $("recurringForm").onsubmit = async (event) => {
   event.preventDefault(); const form = event.currentTarget; const fields = new FormData(form);
   const item = { name: String(fields.get("name")).trim().slice(0, 50), amount: Number(fields.get("amount")), dueDay: Number(fields.get("dueDay")), kind: String(fields.get("kind")), enabled: true };
   if (!item.name || item.amount <= 0 || item.dueDay < 1 || item.dueDay > 31) return;
-  if (!hasPlus && recurringItems.length >= 3) { promptPlus("Unlimited bills and subscriptions"); return; }
+  if (item.kind === "subscription" && !hasPlus()) { promptPlus("subscriptions"); return; }
+  if (!hasPlus() && recurringItems.filter((entry) => entry.kind !== "subscription").length >= FREE_LIMITS.recurringItems) { promptPlus("unlimitedBills"); return; }
   try {
     if (guestMode) { recurringItems = [{ id: "local_" + crypto.randomUUID(), ...item }, ...recurringItems]; saveToolLocal("recurringItems", recurringItems); renderTools(); }
     else if (user) await addDoc(userCollection("recurring"), item);
@@ -1125,7 +1183,7 @@ $("recurringForm").onsubmit = async (event) => {
 };
 $("debtForm").onsubmit = async (event) => {
   event.preventDefault(); const form = event.currentTarget; const fields = new FormData(form);
-  if (!hasPlus) { promptPlus("Personal IOU and settle-up tracking"); return; }
+  if (!hasPlus()) { promptPlus("iouTracking"); return; }
   const item = { person: String(fields.get("person")).trim().slice(0, 50), amount: Number(fields.get("amount")), note: String(fields.get("note") || "").trim().slice(0, 80), direction: String(fields.get("direction")), settled: false, createdAt: new Date().toISOString() };
   if (!item.person || item.amount <= 0) return;
   try {
@@ -1139,6 +1197,8 @@ document.addEventListener("click", async (event) => {
   const action = event.target.closest("[data-tool-action]");
   if (!remove && !action) return;
   const type = remove ? remove.dataset.toolDelete : "debts"; const id = (remove || action).dataset.id;
+  if (type === "debts" && !hasPlus()) { promptPlus("iouTracking"); return; }
+  if (type === "recurring" && remove.dataset.kind === "subscription" && !hasPlus()) { promptPlus("subscriptions"); return; }
   try {
     if (guestMode) {
       if (remove && type === "recurring") recurringItems = recurringItems.filter((item) => item.id !== id);
@@ -1158,7 +1218,7 @@ $("sharedSplitForm").onsubmit = async (event) => {
   const members = challengeMemberData.filter((item) => item.challengeId === circleId);
   if (!circle) { alert("Create or join a savings circle first."); return; }
   if (members.length < 2) { alert("Invite at least one other person to this circle before splitting a cost."); return; }
-  if (!hasPlus && members.length > 2) { promptPlus("Splitting with three or more people"); return; }
+  if (!hasPlus() && members.length > FREE_LIMITS.splitPeople) { promptPlus("largeSplits"); return; }
   if (members.length > 20) { alert("Even splits currently support up to 20 circle members."); return; }
   try {
     await addDoc(collection(getDatabase(), "challenges", circleId, "splits"), { title: String(fields.get("title")).trim().slice(0,60), total: Number(fields.get("total")), participantCount: members.length, createdBy: user.uid, createdByName: (user.displayName || user.email?.split("@")[0] || "Moonledger user").slice(0,40), createdAt: new Date().toISOString() });
@@ -1168,7 +1228,8 @@ $("sharedSplitForm").onsubmit = async (event) => {
 $("sharedSplitList").addEventListener("click", async (event) => {
   const button = event.target.closest("[data-split-iou]"); if (!button || !user) return;
   const split = sharedSplits.find((item) => item.id === button.dataset.splitIou); if (!split) return;
-  if (!hasPlus && Number(split.participantCount) > 2) { promptPlus("Settle-up tracking for larger splits"); return; }
+  if (!hasPlus()) { promptPlus("iouTracking"); return; }
+  if (!hasPlus() && Number(split.participantCount) > FREE_LIMITS.splitPeople) { promptPlus("largeSplits"); return; }
   const existing = debtItems.find((item) => item.splitId === split.id);
   if (existing) { alert("This shared cost is already in your personal IOU list."); return; }
   const share = Number(split.total) / Math.max(1, Number(split.participantCount));
@@ -1187,7 +1248,7 @@ $("sharedSplitList").addEventListener("click", async (event) => {
 });
 $("markNoSpend").onclick = async () => {
   const today = currentDayKey(); if (noSpendDates.includes(today)) return;
-  if (expenses.some((entry) => currentDayKey(new Date(entry.date)) === today)) { alert("You have an expense logged for today. Review it before marking today as no-spend."); return; }
+  if (expenses.some((entry) => currentDayKey(expenseDate(entry.date)) === today)) { alert("You have an expense logged for today. Review it before marking today as no-spend."); return; }
   try {
     if (guestMode) { noSpendDates = [...noSpendDates, today]; saveToolLocal("noSpendDates", noSpendDates); renderInsights(); }
     else if (user) { await setDoc(doc(userCollection("noSpendDays"), today), { date: today }); }
@@ -1210,16 +1271,14 @@ $("startChallenge").onclick = async () => {
     alert("Your 7-day no-spend challenge is on · day " + Math.min(elapsed + 1, 7) + " of 7. Mark no-spend days only when you spent nothing.");
   } catch (error) { alert("Could not save the challenge. " + error.message); }
 };
-function exportCurrentCsv() {
-  if (!hasPlus) { promptPlus("CSV export"); return; }
-  const [year, month] = monthSelect.value.split("-").map(Number);
-  const rows = expenses.filter((entry) => { const date = new Date(entry.date); return date.getFullYear() === year && date.getMonth() + 1 === month; });
-  const blob = new Blob([makeExpenseCsv(rows)], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob);
-  const link = document.createElement("a"); link.href = url; link.download = "moonledger-" + monthSelect.value + ".csv"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+function exportAllCsv() {
+  const blob = new Blob([makeExpenseCsv(expenses)], { type: "text/csv;charset=utf-8" }); const url = URL.createObjectURL(blob);
+  const link = document.createElement("a"); link.href = url; link.download = "moonledger-all-expenses.csv"; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
-$("exportCsv").onclick = exportCurrentCsv;
+$("exportCsv").textContent = "Export all CSV";
+$("exportCsv").onclick = exportAllCsv;
 function makeRecapCanvas() {
-  const [year, month] = monthSelect.value.split("-").map(Number); const rows = expenses.filter((entry) => { const d = new Date(entry.date); return d.getFullYear() === year && d.getMonth() + 1 === month; });
+  const [year, month] = monthSelect.value.split("-").map(Number); const rows = expenses.filter((entry) => { const d = expenseDate(entry.date); return d.getFullYear() === year && d.getMonth() + 1 === month; });
   const totals = {}; rows.forEach((entry) => totals[entry.category] = (totals[entry.category] || 0) + Number(entry.amount));
   const top = Object.entries(totals).sort((a,b)=>b[1]-a[1])[0]; const biggest = rows.slice().sort((a,b)=>Number(b.amount)-Number(a.amount))[0];
   const marked = new Set(noSpendDates.filter((key) => key.startsWith(monthSelect.value)));
@@ -1240,7 +1299,7 @@ function makeRecapCanvas() {
   return canvas;
 }
 $("makeRecap").onclick = async () => {
-  if (!hasPlus) { promptPlus("Watermark-free shareable monthly recaps"); return; }
+  if (!hasPlus()) { promptPlus("watermarkFreeRecaps"); return; }
   const canvas = makeRecapCanvas(); const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png")); if (!blob) return;
   const file = new File([blob], "moonledger-recap-" + monthSelect.value + ".png", { type: "image/png" });
   if (navigator.share && navigator.canShare?.({ files: [file] })) { try { await navigator.share({ title: "My Moonledger recap", files: [file] }); return; } catch (error) { if (error.name === "AbortError") return; } }
@@ -1385,16 +1444,21 @@ $("today").textContent = new Date().toLocaleDateString("en-IN", { weekday: "long
 onAuthStateChanged(auth, (signedInUser) => {
   const hasGoogle = signedInUser && signedInUser.providerData.some((entry) => entry.providerId === "google.com");
   const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
-  if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser);
+  if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser).catch((error) => {
+    console.warn("Account setup failed.", error);
+    $("cloudStatus").textContent = "Could not refresh your account access. Sign out and in to try again.";
+  });
   else {
     if (!signedInUser && guestMode) return;
-    user = null; stopExpenses?.(); stopBudget?.(); stopChallengeListeners(); showSignedOut();
+    user = null; planClaims = {}; clearInterval(planRefreshTimer); clearTimeout(planExpiryTimer); stopExpenses?.(); stopBudget?.(); stopChallengeListeners(); showSignedOut();
     if (signedInUser) {
       signOut(auth).catch(() => {});
       $("authError").textContent = "Moonledger needs a verified @gmail.com account. Sign in with Gmail to continue.";
     }
   }
 });
+window.addEventListener("focus", () => { if (user) refreshPlan(true); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && user) refreshPlan(true); });
 getRedirectResult(auth).catch((error) => {
   console.error("Google sign-in redirect failed.", error);
   $("authError").textContent = error.message || "Google sign-in could not be completed. Please try again.";

@@ -41,34 +41,26 @@ service cloud.firestore {
         && request.auth.token.email.matches('^[^@]+@gmail[.]com$');
     }
 
-    function validPlusEntitlement(userId, code) {
-      let codePath = /databases/$(database)/documents/accessCodes/$(code);
-      return code.matches('^[A-F0-9]{32}$')
-        && existsAfter(codePath)
-        && getAfter(codePath).data.active == true
-        && getAfter(codePath).data.claimedBy == userId
-        && getAfter(codePath).data.recipientEmail == request.auth.token.email
-        && getAfter(codePath).data.claimedAt == request.time;
+    function hasPlusPlan() {
+      return request.auth != null
+        && ('plan' in request.auth.token)
+        && request.auth.token.plan in ['plus', 'lifetime', 'friend', 'owner']
+        && (!('planUntil' in request.auth.token)
+          || (request.auth.token.planUntil is int
+            && request.auth.token.planUntil > request.time.toMillis()));
     }
 
-    function validPlusPassClaim(code) {
-      let entitlementPath = /databases/$(database)/documents/users/$(request.auth.uid)/entitlements/plus;
-      return isSignedInGoogleGmail()
-        && code.matches('^[A-F0-9]{32}$')
-        && resource.data.active == true
-        && resource.data.recipientEmail == request.auth.token.email
-        && (!('claimedBy' in resource.data) || resource.data.claimedBy == null)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy', 'claimedAt'])
-        && request.resource.data.claimedBy == request.auth.uid
-        && request.resource.data.claimedAt == request.time
-        && existsAfter(entitlementPath)
-        && getAfter(entitlementPath).data.tier == 'plus'
-        && getAfter(entitlementPath).data.accessCode == code
-        && getAfter(entitlementPath).data.grantedAt == request.time;
+    function canUseCircle(circleId) {
+      let slotPath = /databases/$(database)/documents/users/$(request.auth.uid)/circleAccess/freeSlot;
+      return hasPlusPlan()
+        || (exists(slotPath)
+          ? get(slotPath).data.circleId == circleId
+          : existsAfter(slotPath) && getAfter(slotPath).data.circleId == circleId);
     }
 
     function isCircleMember(circleId) {
       return isSignedInGoogleGmail()
+        && canUseCircle(circleId)
         && exists(/databases/$(database)/documents/challenges/$(circleId)/members/$(request.auth.uid));
     }
 
@@ -92,6 +84,7 @@ service cloud.firestore {
     function validCircleMember(circleId, memberId) {
       return isSignedInGoogleGmail()
         && request.auth.uid == memberId
+        && canUseCircle(circleId)
         && request.resource.data.keys().hasOnly([
           'displayName', 'inviteCode', 'joinedAt'
         ])
@@ -122,7 +115,8 @@ service cloud.firestore {
     }
 
     match /users/{userId} {
-      allow read, create, update, delete: if isGoogleOwner(userId);
+      allow read: if isGoogleOwner(userId);
+      allow create, update, delete: if false;
 
       match /expenses/{expenseId} {
         allow read, delete: if isGoogleOwner(userId);
@@ -137,6 +131,7 @@ service cloud.firestore {
       match /challenges/{circleId} {
         allow read: if isGoogleOwner(userId);
         allow create, update: if isGoogleOwner(userId)
+          && canUseCircle(circleId)
           && request.resource.data.keys().hasOnly(['name', 'inviteCode', 'joinedAt'])
           && request.resource.data.name is string
           && request.resource.data.name.size() <= 40
@@ -145,9 +140,21 @@ service cloud.firestore {
         allow delete: if isGoogleOwner(userId);
       }
 
+      match /circleAccess/{slotId} {
+        allow read: if isGoogleOwner(userId);
+        allow create: if isGoogleOwner(userId)
+          && slotId == 'freeSlot'
+          && request.resource.data.keys().hasOnly(['circleId', 'createdAt'])
+          && request.resource.data.circleId is string
+          && request.resource.data.createdAt is string
+          && existsAfter(/databases/$(database)/documents/challenges/$(request.resource.data.circleId)/members/$(userId));
+        allow update, delete: if false;
+      }
+
       match /recurring/{itemId} {
         allow read, delete: if isGoogleOwner(userId);
         allow create, update: if isGoogleOwner(userId)
+          && (request.resource.data.kind != 'subscription' || hasPlusPlan())
           && request.resource.data.keys().hasOnly(['name', 'amount', 'dueDay', 'kind', 'enabled', 'lastReminderKey'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 50
           && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
@@ -158,8 +165,9 @@ service cloud.firestore {
       }
 
       match /debts/{debtId} {
-        allow read, delete: if isGoogleOwner(userId);
-        allow create, update: if isGoogleOwner(userId)
+        allow read: if isGoogleOwner(userId);
+        allow delete: if isGoogleOwner(userId) && hasPlusPlan();
+        allow create, update: if isGoogleOwner(userId) && hasPlusPlan()
           && request.resource.data.keys().hasOnly(['person', 'amount', 'note', 'direction', 'settled', 'createdAt', 'splitId'])
           && request.resource.data.person is string && request.resource.data.person.size() > 0 && request.resource.data.person.size() <= 50
           && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
@@ -221,23 +229,14 @@ service cloud.firestore {
           && request.resource.data.startDate.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$');
       }
 
-      match /entitlements/{entitlementId} {
-        allow read: if isGoogleOwner(userId);
-        allow create, update: if isGoogleOwner(userId)
-          && entitlementId == 'plus'
-          && request.resource.data.keys().hasOnly(['tier', 'accessCode', 'grantedAt'])
-          && request.resource.data.tier == 'plus'
-          && request.resource.data.accessCode is string
-          && request.resource.data.grantedAt == request.time
-          && validPlusEntitlement(userId, request.resource.data.accessCode);
-        allow delete: if false;
-      }
+      match /entitlements/{entitlementId} { allow read, write: if false; }
     }
 
     match /challengeInvites/{inviteCode} {
       allow get: if isSignedInGoogleGmail();
       allow list: if false;
       allow create: if isSignedInGoogleGmail()
+        && canUseCircle(circleId)
         && request.resource.data.keys().hasOnly(['challengeId', 'name', 'createdBy'])
         && request.resource.data.challengeId is string
         && request.resource.data.name is string
@@ -250,10 +249,7 @@ service cloud.firestore {
         && resource.data.createdBy == request.auth.uid;
     }
 
-    match /accessCodes/{code} {
-      allow get, list, create, delete: if false;
-      allow update: if validPlusPassClaim(code);
-    }
+    match /accessCodes/{code} { allow read, write: if false; }
 
     match /challenges/{circleId} {
       allow create: if isSignedInGoogleGmail()
@@ -280,12 +276,14 @@ service cloud.firestore {
       }
 
       match /splits/{splitId} {
-        allow read: if isCircleMember(circleId);
+        allow read: if isCircleMember(circleId)
+          && (resource.data.participantCount <= 2 || hasPlusPlan());
         allow create: if isCircleMember(circleId)
           && request.resource.data.keys().hasOnly(['title', 'total', 'participantCount', 'createdBy', 'createdByName', 'createdAt'])
           && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 60
           && request.resource.data.total is number && request.resource.data.total > 0 && request.resource.data.total <= 100000000
           && request.resource.data.participantCount is int && request.resource.data.participantCount >= 2 && request.resource.data.participantCount <= 20
+          && (request.resource.data.participantCount <= 2 || hasPlusPlan())
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.createdByName is string && request.resource.data.createdByName.size() <= 40
           && request.resource.data.createdAt is string;

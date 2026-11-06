@@ -4,7 +4,14 @@ dist/
 .DS_Store
 .firebase/
 firebase-debug.log
+firestore-debug.log
 ui-debug.log
 
 functions/node_modules/
 functions/.runtimeconfig.json
+service-account*.json
+*service-account*.json
+firebase-admin-key*.json
+*firebase-adminsdk*.json
+.env*
+!.env.example
