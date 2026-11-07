@@ -54,6 +54,22 @@ Use `plus`, `lifetime`, `friend`, or `owner` for Plus access. An optional expiry
 
 For permanent complimentary Plus, run `npm run plan:grant -- person@gmail.com lifetime` with no expiry. This `lifetime` grant stays active until you revoke it with `npm run plan:revoke -- person@gmail.com`.
 
+### Gift one year of Plus to the first 333 users
+
+Prepare a private CSV with one Gmail address per row, ordered by the signup/offer timestamp (the first row is the first eligible user). The first 333 unique addresses are selected; all must already have signed in once. Never commit this list. Set `FIREBASE_SERVICE_ACCOUNT_KEY` as above, then preview the grants:
+
+```sh
+npm run plan:grant-first-333 -- --file /absolute/path/promo-emails.csv
+```
+
+The preview makes no changes, checks that all selected accounts exist, and skips accounts that already have active Plus/friend, lifetime, or owner access. After reviewing the exact 333 entries and expiry, apply the grants:
+
+```sh
+npm run plan:grant-first-333 -- --file /absolute/path/promo-emails.csv --apply
+```
+
+The one-year period starts for all recipients at the time the batch runs. Firebase custom claims are changed by this local administrator script, not by a public app screen. For permanent complimentary Plus, use the `lifetime` command above for each selected Gmail account. Recipients need to refresh their sign-in token; signing out and back in is the simplest method.
+
 The previous Firestore Plus Pass/entitlement flow is retired because clients must not grant their own plan. Existing pass-based users need an admin claim grant using the scripts above.
 
 ## Archived history

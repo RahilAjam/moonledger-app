@@ -10,6 +10,7 @@
     "test": "node --test tests/plan-archive.test.js tests/receipt-ocr.test.js",
     "test:rules": "firebase emulators:exec --only firestore --project demo-moonledger \"node --test tests/firestore.rules.test.js\"",
     "plan:grant": "node scripts/grant.js",
+    "plan:grant-first-333": "node scripts/grant-first-333.js",
     "plan:revoke": "node scripts/revoke.js"
   },
   "dependencies": {
@@ -21,5 +22,8 @@
     "firebase-admin": "^14.5.0",
     "firebase-tools": "^15.35.0",
     "vite": "^7.2.2"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.14.7"
   }
 }
