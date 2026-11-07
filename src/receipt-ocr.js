@@ -73,42 +73,72 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng", 1, { logger: (event) => { if (event.status === "recognizing text") onProgress(Math.round((event.progress || 0) * 100)); } });
   try {
-    // Small phone screenshots make punctuation and currency marks hard to
-    // recognize. Upscale them locally before OCR; the image never leaves the device.
+    // Phone receipts often put the amount in a small block surrounded by a
+    // large dark/blank canvas. Read the full image and focused regions locally.
     let input = file;
+    let amountRegion = null;
+    let detailsRegion = null;
     if (typeof createImageBitmap === "function" && typeof document !== "undefined") {
       const bitmap = await createImageBitmap(file);
-      const scale = Math.min(2, 2200 / Math.max(bitmap.width, bitmap.height));
-      if (scale > 1.05) {
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(bitmap.width * scale);
-        canvas.height = Math.round(bitmap.height * scale);
-        const context = canvas.getContext("2d", { willReadFrequently: true });
-        context.filter = "contrast(1.12)";
-        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-        input = canvas;
-      }
+      const scale = Math.min(2, 2600 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.filter = "grayscale(1) contrast(1.2)";
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const crop = (x, y, width, height) => {
+        const region = document.createElement("canvas");
+        region.width = Math.round(canvas.width * width);
+        region.height = Math.round(canvas.height * height);
+        const regionContext = region.getContext("2d", { willReadFrequently: true });
+        regionContext.filter = "contrast(1.35)";
+        regionContext.drawImage(canvas, Math.round(canvas.width * x), Math.round(canvas.height * y), region.width, region.height, 0, 0, region.width, region.height);
+        return region;
+      };
+      input = canvas;
+      // GPay-style success receipts place the amount near the top and payment
+      // metadata in a separate block lower down. These crops improve small text.
+      amountRegion = crop(0.16, 0.16, 0.68, 0.34);
+      detailsRegion = crop(0.08, 0.48, 0.84, 0.34);
       bitmap.close();
     }
     const standard = await worker.recognize(input, { rotateAuto: true });
-    let details = parsePaymentScreenshotText(standard.data.text);
     await worker.setParameters({ tessedit_pageseg_mode: "11" });
-    const sparse = await worker.recognize(input, { rotateAuto: true });
-    const sparseDetails = parsePaymentScreenshotText(sparse.data.text);
-    const recognizedText = [standard.data.text, sparse.data.text].filter(Boolean).join("\n");
-    const corroborated = details && sparseDetails && details.amount === sparseDetails.amount;
-
-    // A second OCR layout pass catches amount text on tall, mostly empty UPI
-    // receipt screens. If both passes disagree, prefer the explicit currency/
-    // amount label; if neither is strong, ask the user instead of guessing.
-    if (details && sparseDetails && details.amount !== sparseDetails.amount) {
-      if (Math.abs(details.confidence - sparseDetails.confidence) < 4) return null;
-      details = details.confidence > sparseDetails.confidence ? details : sparseDetails;
-    } else if (!details || (sparseDetails && sparseDetails.confidence > details.confidence)) {
-      details = sparseDetails;
+    const reads = [standard.data.text];
+    if (detailsRegion) reads.push((await worker.recognize(detailsRegion)).data.text);
+    if (amountRegion) {
+      await worker.setParameters({ tessedit_pageseg_mode: "7", tessedit_char_whitelist: "0123456789₹.,INR" });
+      reads.push((await worker.recognize(amountRegion)).data.text);
+    } else {
+      const sparse = await worker.recognize(input, { rotateAuto: true });
+      reads.push(sparse.data.text);
     }
-    if (details && details.confidence < 8 && !corroborated) return null;
-    return details ? { ...details, text: recognizedText } : null;
+    const recognizedText = reads.filter(Boolean).join("\n");
+    const passDetails = reads.map(parsePaymentScreenshotText).filter(Boolean);
+    const combined = parsePaymentScreenshotText(recognizedText);
+    if (!passDetails.length && !combined) return null;
+
+    // Prefer an amount repeated by independent passes. A single explicit
+    // currency amount is also safe; conflicting equally strong reads are not.
+    const groups = new Map();
+    for (const detail of passDetails) {
+      const group = groups.get(detail.amount) || { amount: detail.amount, count: 0, score: 0, detail };
+      group.count += 1;
+      group.score += detail.confidence;
+      if (detail.confidence > group.detail.confidence) group.detail = detail;
+      groups.set(detail.amount, group);
+    }
+    const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.score - a.score);
+    let chosen = ranked[0];
+    if (ranked.length > 1 && ranked[0].count === ranked[1].count && ranked[0].score - ranked[1].score < 4) return null;
+    if (chosen && chosen.count === 1 && chosen.score < 8) return null;
+    if (!chosen && combined) {
+      if (combined.confidence < 8) return null;
+      chosen = { amount: combined.amount, score: combined.confidence, detail: combined };
+    }
+    const details = combined || chosen?.detail;
+    return details && chosen ? { ...details, amount: chosen.amount, confidence: chosen.score, text: recognizedText } : null;
   } finally {
     await worker.terminate();
   }
