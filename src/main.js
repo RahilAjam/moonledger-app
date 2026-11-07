@@ -1030,7 +1030,7 @@ async function processPaymentScreenshot(file, status) {
   status.textContent = "Reading screenshot on this device…";
   try {
     const parsed = await readPaymentScreenshot(file, (progress) => { status.textContent = "Reading screenshot on this device · " + progress + "%"; });
-    if (!parsed || (parsed.text && !hasCurrencyAmount(parsed.text))) {
+    if (!parsed) {
       status.textContent = "Couldn’t confidently find a payment amount. Try a clearer screenshot or add it manually.";
       return;
     }
@@ -1073,7 +1073,6 @@ async function openSharedTextIfPresent() {
   sharedText = "";
 }
 
-function hasCurrencyAmount(text) { return /(?:₹\s*|\bINR\s*|\bRs\.?\s*)\d/i.test(String(text || "")); }
 $("parseSms").onclick = () => {
   if (!hasPlus()) { promptPlus("messageParsing"); return; }
   const raw = $("smsText").value;
