@@ -26,6 +26,18 @@ test("prefers a labeled payment amount over a reference number", () => {
   assert.equal(parsed.amount, 1250);
 });
 
+test("reads a Google Pay style tall receipt with the amount and recipient on separate lines", () => {
+  const parsed = parsePaymentScreenshotText("✓\n₹32\nPaid to\nNagarathnama\nBanking name: Nagarathnama\n7 November 2026, 7:34pm\nPowered by UPI");
+  assert.equal(parsed.amount, 32);
+  assert.equal(parsed.merchant, "Nagarathnama");
+  assert.equal(parsed.date, new Date(2026, 10, 7, 12).toISOString());
+});
+
+test("does not choose cashback or balance figures instead of the payment", () => {
+  const parsed = parsePaymentScreenshotText("Payment successful\nPaid to Shop\n₹32\nCashback ₹5\nAvailable balance ₹900");
+  assert.equal(parsed.amount, 32);
+});
+
 test("ignores invalid dates and safely falls back to today", () => {
   const parsed = parsePaymentScreenshotText("Paid to Auto\nRs. 60\n31/02/2026");
   assert.equal(parsed.amount, 60);

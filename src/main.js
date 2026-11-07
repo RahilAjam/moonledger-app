@@ -13,7 +13,7 @@ import { firebaseConfig } from "./firebase-config.js";
 import { parseExpenseText, makeExpenseCsv } from "./feature-tools.js";
 import { hasPlus as planHasPlus, PLUS_FEATURES, FREE_LIMITS, PLUS_LAUNCHED } from "./plan.js";
 import { getArchiveSummary, getOldestUpcomingArchive, getVisibleExpenses, localDateKey } from "./archive.js";
-import { readPaymentScreenshot } from "./receipt-ocr.js";
+import { parsePaymentScreenshotText, readPaymentScreenshot } from "./receipt-ocr.js";
 
 const { vapidKey, ...appOptions } = firebaseConfig;
 const app = initializeApp(appOptions);
@@ -1031,13 +1031,16 @@ async function processPaymentScreenshot(file, status) {
   try {
     const parsed = await readPaymentScreenshot(file, (progress) => { status.textContent = "Reading screenshot on this device · " + progress + "%"; });
     if (!parsed) {
-      status.textContent = "Couldn’t confidently find a payment amount. Try a clearer screenshot or add it manually.";
+      status.textContent = "We couldn’t read the amount reliably. Check the receipt and enter it manually.";
+      openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+      $("expenseModalTitle").textContent = "Enter payment amount";
+      $("expenseForm").querySelector("p").textContent = "We couldn’t read the amount reliably. Enter it from the receipt, then review before saving.";
       return;
     }
-    status.textContent = "Screenshot read on this device. Review the details and add its purpose.";
+    status.textContent = "Screenshot read on this device. Verify the amount and add its purpose.";
     openExpenseModal({ ...parsed, note: parsed.merchant || "", date: parsed.date || new Date().toISOString() });
     $("expenseModalTitle").textContent = "Confirm payment screenshot";
-    $("expenseForm").querySelector("p").textContent = "Check the detected details and add what this payment was for.";
+    $("expenseForm").querySelector("p").textContent = "We read ₹" + Number(parsed.amount).toLocaleString("en-IN") + ". Verify the amount, date, and merchant against the receipt before saving.";
     $("note").placeholder = "What was this payment for? (you can edit the merchant)";
     setTimeout(() => $("note").focus(), 30);
   } catch (error) {
@@ -1060,11 +1063,11 @@ async function openSharedTextIfPresent() {
     } catch (error) { $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. You can still add the expense manually."; console.warn("Shared payment could not be read.", error); return; }
   }
   if (!sharedText) return;
-  const parsed = parseExpenseText(sharedText);
+  const parsed = parsePaymentScreenshotText(sharedText);
   if (parsed) {
     if (!hasPlus()) { promptPlus("messageParsing"); sharedText = ""; return; }
-    $("quickEntryStatus").textContent = "Shared message parsed on this device. Review the draft before saving.";
-    openExpenseModal({ ...parsed, date: new Date().toISOString() });
+    $("quickEntryStatus").textContent = "Shared payment details read on this device. Verify them before saving.";
+    openExpenseModal({ ...parsed, date: parsed.date || new Date().toISOString() });
   } else {
     $("smsText").value = sharedText;
     $("smsStatus").textContent = "Shared text is ready. It stays on this device until you choose to save a draft.";
@@ -1076,13 +1079,10 @@ async function openSharedTextIfPresent() {
 $("parseSms").onclick = () => {
   if (!hasPlus()) { promptPlus("messageParsing"); return; }
   const raw = $("smsText").value;
-  const parsed = parseExpenseText(raw);
+  const parsed = parsePaymentScreenshotText(raw);
   if (!parsed) { $("smsStatus").textContent = "Couldn’t find an amount. Check the message and fill the form yourself."; return; }
-  const dateMatch = raw.match(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b/);
-  let date = new Date().toISOString();
-  if (dateMatch) { const year = Number(dateMatch[3].length === 2 ? "20" + dateMatch[3] : dateMatch[3]); date = new Date(year, Number(dateMatch[2]) - 1, Number(dateMatch[1]), 12).toISOString(); }
   $("smsStatus").textContent = "Parsed on this device. Review everything before saving.";
-  openExpenseModal({ ...parsed, date });
+  openExpenseModal(parsed);
 };
   monthSelect.onchange = () => { watchBudget(monthSelect.value); watchChallengeMembers(); render(); };
 document.querySelectorAll("[data-method]").forEach((button) => button.onclick = () => {
