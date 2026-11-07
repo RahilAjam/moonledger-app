@@ -854,6 +854,7 @@ function renderContent() {
   const sorted = visibleItems.slice().sort((a, b) => expenseDate(b.date) - expenseDate(a.date));
   const list = $("expenseList");
   list.replaceChildren();
+  $("activity").classList.toggle("is-empty", isHome && !sorted.length);
   if (!sorted.length) list.innerHTML = isHome
     ? '<div class="empty">Nothing here yet. Add a spend whenever you’re ready.</div>'
     : '<div class="empty">No matching spends yet. Try another search or add an expense.</div>';
@@ -907,11 +908,13 @@ function updateBudget() {
   $("dailySafeCard").style.setProperty("--budget-progress", Math.min(100, budget ? spent / budget * 100 : 0) + "%");
   $("dailySafeSetBudget").hidden = Boolean(budget);
   if (!budget) {
-    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = "";
-    $("dailySafeAmount").textContent = "—";
-    $("dailySafeNote").textContent = month === currentMonth ? "Set a monthly budget to get your daily guide." : "Choose the current month and set a budget to get your daily guide.";
+    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = true; $("budgetNumbers").textContent = "";
+    $("dailySafeCard").classList.add("is-empty");
+    $("dailySafeAmount").textContent = "";
+    $("dailySafeNote").textContent = month === currentMonth ? "Set a budget to see your daily number." : "Choose the current month and set a budget to see your daily number.";
     return;
   }
+  $("dailySafeCard").classList.remove("is-empty");
   $("budgetEmpty").hidden = true; $("budgetProgress").hidden = false; $("setBudget").hidden = true;
   $("budgetNumbers").textContent = money(spent) + " / " + money(budget);
   const ratio = spent / budget;
@@ -1367,24 +1370,30 @@ function makeRecapCanvas() {
   return canvas;
 }
 $("makeRecap").onclick = async () => {
-  if (!hasPlus()) { promptPlus("watermarkFreeRecaps"); return; }
-  const canvas = makeRecapCanvas(); const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png")); if (!blob) return;
-  const file = new File([blob], "moonledger-recap-" + monthSelect.value + ".png", { type: "image/png" });
+  const file = await buildRecapFile(); if (!file) return;
   if (navigator.share && navigator.canShare?.({ files: [file] })) { try { await navigator.share({ title: "My Moonledger recap", files: [file] }); return; } catch (error) { if (error.name === "AbortError") return; } }
-  const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  downloadRecapFile(file);
 };
+async function buildRecapFile() {
+  const canvas = makeRecapCanvas(); const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  return blob ? new File([blob], "moonledger-recap-" + monthSelect.value + ".png", { type: "image/png" }) : null;
+}
+function downloadRecapFile(file) {
+  const url = URL.createObjectURL(file); const link = document.createElement("a"); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+$("downloadRecap").onclick = async () => { const file = await buildRecapFile(); if (file) downloadRecapFile(file); };
 
 function syncReminderButton() {
   $("reminderToggle").textContent = reminderEnabled ? "Reminder on" : "Reminder off";
   $("reminderToggle").setAttribute("aria-pressed", String(reminderEnabled));
   if ($("accountReminderToggle")) { $("accountReminderToggle").textContent = reminderEnabled ? "Reminder on" : "Reminder off"; $("accountReminderToggle").setAttribute("aria-pressed", String(reminderEnabled)); }
-  $("reminderText").textContent = reminderEnabled ? "A gentle 10 PM check-in. Push reminders need notification permission and Firebase setup; this page-open reminder works now." : "Your 10 PM check-in is paused.";
+  $("reminderText").textContent = reminderEnabled ? "A gentle 10 PM check-in while Moonledger is open on this device." : "Your 10 PM check-in is paused.";
 }
 function closeReminder() { $("reminderModal").classList.remove("open"); }
 $("reminderToggle").onclick = async () => {
   reminderEnabled = !reminderEnabled; localStorage.setItem(reminderKey, reminderEnabled ? "on" : "off"); syncReminderButton();
   const tokenId = user && localStorage.getItem("moonledger-push-token-" + user.uid);
-  if (tokenId) updateDoc(doc(userCollection("notificationTokens"), tokenId), { eveningEnabled: reminderEnabled, updatedAt: new Date().toISOString() }).catch((error) => { $("pushStatus").textContent = "Reminder setting could not sync to push: " + error.message; });
+  if (tokenId) updateDoc(doc(userCollection("notificationTokens"), tokenId), { eveningEnabled: reminderEnabled, updatedAt: new Date().toISOString() }).catch(() => { $("pushStatus").textContent = "Could not update alerts on this device. The in-page reminder still works."; });
 };
 $("accountReminderToggle").onclick = () => $("reminderToggle").click();
 const reviewPrompts = [
@@ -1416,7 +1425,7 @@ $("enableAlerts").onclick = async () => {
   $("enableAlerts").textContent = permission === "granted" ? "Alerts enabled" : permission === "denied" ? "Alerts blocked" : "Enable alerts";
   if (permission !== "granted") { $("reminderText").textContent = "Notification permission was not granted. The in-page reminder still works while Moonledger is open."; return; }
   if (!user) { $("reminderText").textContent = "Notifications are allowed on this device. Sign in to enable account-synced push reminders."; return; }
-  if (!vapidKey) { $("reminderText").textContent = "Permission is ready. Add your Firebase Web Push certificate key and deploy the scheduled reminder function to activate push alerts."; $("pushStatus").textContent = "Waiting for Firebase Web Push key and scheduled function setup."; return; }
+  if (!vapidKey) { $("reminderText").textContent = "The reminder is saved on this device. Push alerts are not available yet."; $("pushStatus").textContent = "Push alerts are not available yet; the in-page reminder still works."; return; }
   try {
     if (!(await isSupported())) throw new Error("Push messaging is not supported by this browser.");
     const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
@@ -1426,7 +1435,7 @@ $("enableAlerts").onclick = async () => {
     const tokenId = localStorage.getItem(tokenKey) || crypto.randomUUID();
     await setDoc(doc(userCollection("notificationTokens"), tokenId), { token, userId: user.uid, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata", eveningEnabled: reminderEnabled, lastEveningDate: "", updatedAt: new Date().toISOString() });
     localStorage.setItem("moonledger-push-token-" + user.uid, tokenId);
-    $("pushStatus").textContent = "Push is enabled on this device. Evening and bill alerts arrive when the scheduled Firebase function is deployed.";
+    $("pushStatus").textContent = "Push alerts are enabled on this device.";
     $("reminderText").textContent = "This device is registered for push. The scheduled Firebase function sends reminders at 10 PM and before due bills.";
   } catch (error) { $("pushStatus").textContent = error.message; $("reminderText").textContent = error.message; }
 };
@@ -1459,7 +1468,7 @@ function setView(view) {
   $("reportTools").hidden = !isReports;
   $("expenseSection").hidden = isAccount;
   $("quickCard").hidden = !isOverview;
-  $("quickEntryForm").closest(".quick-entry").hidden = isAccount;
+  $("quickEntryForm").closest(".quick-entry").hidden = !isOverview;
   $("quickAdds").hidden = isAccount || $("quickAddList").children.length === 0;
   $("footerNote").hidden = !isOverview;
   $("accountView").hidden = !isAccount;
@@ -1468,10 +1477,11 @@ function setView(view) {
   $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? "Me" : view;
   $("greeting").nextElementSibling.textContent = isOverview ? "A calm little picture of where it went." : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
-  if (isOverview && guestMode) $("footerNote").firstChild.textContent = "Guest entries are saved only in this browser. They do not sync until you choose to sign in. ";
-  else if (isOverview) $("footerNote").firstChild.textContent = "Your entries are private to your Google account. They sync when you’re online. ";
+  $("cloudStatus").hidden = guestMode;
+  if ($("accountCloudStatus") && guestMode) $("accountCloudStatus").textContent = "Not syncing · guest mode";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
+  $("main").classList.toggle("reports-page", isReports);
   $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Today’s spends";
   $("leaderboardCard").hidden = guestMode || (!isOverview && !isReports);
   $("expenseFilters").hidden = !isExpenses;
