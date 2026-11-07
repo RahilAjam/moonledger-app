@@ -107,9 +107,11 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
     await worker.setParameters({ tessedit_pageseg_mode: "11" });
     const reads = [standard.data.text];
     if (detailsRegion) reads.push((await worker.recognize(detailsRegion)).data.text);
+    let amountText = "";
     if (amountRegion) {
       await worker.setParameters({ tessedit_pageseg_mode: "7", tessedit_char_whitelist: "0123456789₹.,INR" });
-      reads.push((await worker.recognize(amountRegion)).data.text);
+      amountText = (await worker.recognize(amountRegion)).data.text;
+      reads.push(amountText);
     } else {
       const sparse = await worker.recognize(input, { rotateAuto: true });
       reads.push(sparse.data.text);
@@ -128,6 +130,21 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
       group.score += detail.confidence;
       if (detail.confidence > group.detail.confidence) group.detail = detail;
       groups.set(detail.amount, group);
+    }
+    // The numeric amount crop may omit the rupee glyph entirely. In that case,
+    // accept only a lone short number from that focused region when a separate
+    // region confirms a payment receipt (for example, its "Paid to" line).
+    const hasPaymentLabel = /(?:paid|sent|transferred)\s+to|payment\s+(?:successful|complete|completed)|successfully\s+(?:paid|sent)/i.test(reads.slice(0, 2).join("\n"));
+    const amountOnly = amountText.replace(/\s+/g, "").match(/^(?:₹|INR|Rs\.?|R)?([0-9]{1,6}(?:,[0-9]{3})*(?:\.\d{1,2})?)$/i);
+    if (hasPaymentLabel && amountOnly) {
+      const amount = Number(amountOnly[1].replaceAll(",", ""));
+      if (amount > 0 && amount <= 1000000) {
+        const detail = combined || passDetails[0];
+        const group = groups.get(amount) || { amount, count: 0, score: 0, detail };
+        group.count += 1;
+        group.score += 8;
+        groups.set(amount, group);
+      }
     }
     const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.score - a.score);
     let chosen = ranked[0];
