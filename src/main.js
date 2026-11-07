@@ -13,6 +13,7 @@ import { firebaseConfig } from "./firebase-config.js";
 import { parseExpenseText, makeExpenseCsv } from "./feature-tools.js";
 import { hasPlus as planHasPlus, planLabel, PLUS_FEATURES, FREE_LIMITS } from "./plan.js";
 import { getArchiveSummary, getOldestUpcomingArchive, getVisibleExpenses, localDateKey } from "./archive.js";
+import { readPaymentScreenshot } from "./receipt-ocr.js";
 
 const { vapidKey, ...appOptions } = firebaseConfig;
 const app = initializeApp(appOptions);
@@ -42,8 +43,11 @@ let debtItems = [];
 let noSpendDates = [];
 let stopTools = [];
 let reviewIndex = 0;
-let sharedText = new URL(location.href).searchParams.get("text") || new URL(location.href).searchParams.get("title") || "";
-if (new URL(location.href).searchParams.has("text") || new URL(location.href).searchParams.has("title")) history.replaceState({}, "", location.pathname + location.hash);
+const launchUrl = new URL(location.href);
+let sharedText = launchUrl.searchParams.get("text") || launchUrl.searchParams.get("title") || "";
+let sharedPayloadId = launchUrl.searchParams.get("sharedPayload") || "";
+const shareError = launchUrl.searchParams.get("shareError") || "";
+if (["text", "title", "sharedPayload", "shareError"].some((key) => launchUrl.searchParams.has(key))) history.replaceState({}, "", location.pathname + location.hash);
 let method = "UPI";
 let showAll = false;
 let currentView = "Overview";
@@ -95,7 +99,7 @@ function syncPlanUi() {
 
 const planCard = document.createElement("section");
 planCard.className = "plan-card";
-planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p>';
+planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message and shared payment screenshot parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p>';
 $("accountView").prepend(planCard);
 
 const plusPrompt = document.createElement("div");
@@ -948,7 +952,9 @@ function openExpenseModal(entry = null) {
   $("category").value = entry?.category || "Food & drink";
   $("expenseDate").value = dateInputValue(entry?.date || new Date());
   $("expenseDate").max = dateInputValue();
+  $("note").placeholder = "e.g. dinner with friends";
   $("expenseModalTitle").textContent = editingExpenseId ? "Edit expense" : "Add an expense";
+  $("expenseForm").querySelector("p").textContent = "Just a few taps, and you’re done.";
   $("saveExpenseBtn").textContent = editingExpenseId ? "Save changes" : "Save expense";
   document.querySelectorAll("[data-method]").forEach((choice) => choice.classList.toggle("selected", choice.dataset.method === method));
   renderCategoryChips(); syncDateChoices();
@@ -991,8 +997,49 @@ $("quickEntryForm").onsubmit = (event) => {
   openExpenseModal({ ...parsed, date: new Date().toISOString() });
 };
 
-function openSharedTextIfPresent() {
-  if (!sharedText || (!user && !guestMode)) return;
+function readSharedPayload(id) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("moonledger-share-inbox-v1", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("inbox", { keyPath: "id" });
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("inbox", "readwrite");
+      const store = transaction.objectStore("inbox");
+      const get = store.get(id);
+      let payload;
+      get.onsuccess = () => { payload = get.result; store.delete(id); };
+      transaction.oncomplete = () => { db.close(); resolve(payload || null); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
+
+async function openSharedTextIfPresent() {
+  if ((!sharedText && !sharedPayloadId && !shareError) || (!user && !guestMode)) return;
+  if (shareError) { $("quickEntryStatus").textContent = "Moonledger couldn’t open that share. Try sharing the screenshot again."; }
+  if (sharedPayloadId) {
+    const id = sharedPayloadId; sharedPayloadId = "";
+    try {
+      const payload = await readSharedPayload(id);
+      if (payload?.file) {
+        if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
+        $("quickEntryStatus").textContent = "Reading the payment screenshot on this device…";
+        const parsed = await readPaymentScreenshot(payload.file, (progress) => { $("quickEntryStatus").textContent = "Reading screenshot on this device · " + progress + "%"; });
+        if (!parsed) { $("quickEntryStatus").textContent = "Couldn’t find a payment amount. Add the expense manually or try a clearer screenshot."; return; }
+        if (parsed.text && !hasCurrencyAmount(parsed.text)) { $("quickEntryStatus").textContent = "Couldn’t confidently find a payment amount. Please add it manually."; return; }
+        $("quickEntryStatus").textContent = "Screenshot read on this device. Confirm the amount, date and merchant, then add its purpose.";
+        openExpenseModal({ ...parsed, note: parsed.merchant || "", date: parsed.date || new Date().toISOString() });
+        $("expenseModalTitle").textContent = "Confirm shared payment";
+        $("expenseForm").querySelector("p").textContent = "Check the detected details and add what this payment was for.";
+        $("note").placeholder = "What was this payment for? (you can edit the merchant)";
+        setTimeout(() => $("note").focus(), 30);
+        return;
+      }
+      if (payload?.text) sharedText = payload.text;
+    } catch (error) { $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. You can still add the expense manually."; console.warn("Shared payment could not be read.", error); return; }
+  }
+  if (!sharedText) return;
   const parsed = parseExpenseText(sharedText);
   if (parsed) {
     if (!hasPlus()) { promptPlus("messageParsing"); sharedText = ""; return; }
@@ -1005,6 +1052,8 @@ function openSharedTextIfPresent() {
   }
   sharedText = "";
 }
+
+function hasCurrencyAmount(text) { return /(?:₹\s*|\bINR\s*|\bRs\.?\s*)\d/i.test(String(text || "")); }
 $("parseSms").onclick = () => {
   if (!hasPlus()) { promptPlus("messageParsing"); return; }
   const raw = $("smsText").value;

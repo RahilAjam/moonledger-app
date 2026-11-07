@@ -7,13 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/plan-archive.test.js",
+    "test": "node --test tests/plan-archive.test.js tests/receipt-ocr.test.js",
     "test:rules": "firebase emulators:exec --only firestore --project demo-moonledger \"node --test tests/firestore.rules.test.js\"",
     "plan:grant": "node scripts/grant.js",
     "plan:revoke": "node scripts/revoke.js"
   },
   "dependencies": {
-    "firebase": "^12.19.0"
+    "firebase": "^12.19.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "^5.0.2",

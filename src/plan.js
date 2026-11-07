@@ -3,6 +3,7 @@ export const FREE_LIMITS = Object.freeze({ quickAdds: 5, smartEntriesPerDay: 3, 
 
 export const PLUS_FEATURES = Object.freeze({
   messageParsing: { label: "SMS and UPI message parsing", available: true },
+  sharedScreenshotParsing: { label: "Share payment screenshots from other apps", available: true },
   unlimitedSmartEntry: { label: "Unlimited smart text entry", available: true },
   unlimitedQuickAdds: { label: "Unlimited quick adds", available: true },
   unlimitedBills: { label: "Unlimited recurring bills", available: true },

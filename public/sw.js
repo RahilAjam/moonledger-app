@@ -1,4 +1,20 @@
-const CACHE = "moonledger-shell-v6";
+const CACHE = "moonledger-shell-v7";
+const SHARE_DB = "moonledger-share-inbox-v1";
+
+function saveSharedPayload(payload) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(SHARE_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("inbox", { keyPath: "id" });
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("inbox", "readwrite");
+      transaction.objectStore("inbox").put(payload);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
@@ -26,7 +42,31 @@ self.addEventListener("activate", (event) => {
 });
 self.addEventListener("fetch", (event) => {
   const request = event.request;
-  if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (request.method === "POST" && url.pathname === "/share-target") {
+    event.respondWith((async () => {
+      try {
+        const form = await request.formData();
+        const file = form.get("images");
+        const text = String(form.get("text") || form.get("title") || "").slice(0, 2000);
+        if (!(file instanceof Blob) || !file.type.startsWith("image/") || file.size > 12 * 1024 * 1024) {
+          if (!text) return Response.redirect("/?shareError=unsupported", 303);
+          const id = crypto.randomUUID();
+          await saveSharedPayload({ id, text, createdAt: Date.now() });
+          return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
+        }
+        const id = crypto.randomUUID();
+        await saveSharedPayload({ id, file, text, createdAt: Date.now() });
+        return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
+      } catch (error) {
+        console.warn("Could not receive shared content.", error);
+        return Response.redirect("/?shareError=receive", 303);
+      }
+    })());
+    return;
+  }
+  if (request.method !== "GET") return;
   if (request.mode === "navigate") {
     event.respondWith(fetch(request).then((response) => {
       const copy = response.clone(); caches.open(CACHE).then((cache) => cache.put("/", copy)); return response;

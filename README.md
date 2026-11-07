@@ -37,7 +37,7 @@ Plan access comes from the Firebase Authentication custom claims `plan` and opti
 
 Free includes expense add/edit/delete, categories and payment methods, one monthly budget and daily guide, a basic monthly report, five quick-add buttons, three natural-language entries per day, an evening reminder, dark/light themes, up to three bills, one savings circle, a two-person split, and full CSV export of all expense history.
 
-Plus currently enables pasted SMS/UPI parsing (on-device only), unlimited smart entries and quick adds, unlimited bills and subscription entries, additional savings circles, splits with more than two people, personal IOU tracking, deeper current-month insights, and watermark-free recap cards. Features that are not implemented are listed in the account view as planned and remain unavailable even to Plus accounts. There are no payments in this version.
+Plus currently enables pasted SMS/UPI parsing and shared payment screenshot parsing, unlimited smart entries and quick adds, unlimited bills and subscription entries, additional savings circles, splits with more than two people, personal IOU tracking, deeper current-month insights, and watermark-free recap cards. Screenshot sharing requires Moonledger to be installed as a PWA on a supporting Android browser. The image is processed on-device with OCR; the first OCR may download the recognition engine and English language data. Moonledger prefills a draft for review and never saves it until the user confirms. OCR can misread amounts, merchants, or dates, so verify them. Features that are not implemented are listed in the account view as planned and remain unavailable even to Plus accounts. There are no payments in this version.
 
 ### Grant or revoke a plan
 
@@ -51,6 +51,8 @@ npm run plan:revoke -- person@gmail.com
 ```
 
 Use `plus`, `lifetime`, `friend`, or `owner` for Plus access. An optional expiry is an ISO date/time with its timezone. `revoke` removes the plan claims, and the user becomes Free after refreshing the ID token. The target user must already have signed in once so Firebase Authentication has an account record. Keep the service account key private: it has administrative access to the Firebase project.
+
+For permanent complimentary Plus, run `npm run plan:grant -- person@gmail.com lifetime` with no expiry. This `lifetime` grant stays active until you revoke it with `npm run plan:revoke -- person@gmail.com`.
 
 The previous Firestore Plus Pass/entitlement flow is retired because clients must not grant their own plan. Existing pass-based users need an admin claim grant using the scripts above.
 
