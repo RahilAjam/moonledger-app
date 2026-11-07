@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { initializeTestEnvironment, assertFails, assertSucceeds } from "@firebase/rules-unit-testing";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
 
 const projectId = "moonledger-rules-test";
 let env;
@@ -37,6 +37,29 @@ test("users can only read and write their own expenses", async () => {
     amount: 20, method: "Cash", category: "Food & drink", note: "Tea", date: "2026-11-07"
   }));
   await assertFails(setDoc(doc(mine, "users/alice"), { plan: "owner" }));
+});
+
+test("a free user can create the one savings circle assigned to their free slot", async () => {
+  const db = signedIn("circle-owner");
+  const batch = writeBatch(db);
+  const circleId = "first-circle";
+  const inviteCode = "A".repeat(32);
+  batch.set(doc(db, "users/circle-owner/circleAccess/freeSlot"), { circleId, createdAt: "2026-11-07" });
+  batch.set(doc(db, "users/circle-owner/inviteRateLimits/circles"), {
+    count: 1, windowStartedAt: serverTimestamp(), updatedAt: serverTimestamp()
+  });
+  batch.set(doc(db, `challenges/${circleId}`), { name: "Friends", ownerId: "circle-owner", createdAt: "2026-11-07" });
+  batch.set(doc(db, `challengeInvites/${inviteCode}`), { challengeId: circleId, name: "Friends", createdBy: "circle-owner" });
+  batch.set(doc(db, `challenges/${circleId}/members/circle-owner`), {
+    displayName: "Circle Owner", inviteCode, joinedAt: "2026-11-07"
+  });
+  batch.set(doc(db, `challenges/${circleId}/months/2026-11/members/circle-owner`), {
+    displayName: "Circle Owner", month: "2026-11", budget: 5000, spent: 200, updatedAt: "2026-11-07"
+  });
+  batch.set(doc(db, `users/circle-owner/challenges/${circleId}`), {
+    name: "Friends", inviteCode, joinedAt: "2026-11-07"
+  });
+  await assertSucceeds(batch.commit());
 });
 
 test("only Plus claims can create a shared split for three or more people", async () => {

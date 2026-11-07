@@ -236,9 +236,9 @@ service cloud.firestore {
       allow get: if isSignedInGoogleGmail();
       allow list: if false;
       allow create: if isSignedInGoogleGmail()
-        && canUseCircle(circleId)
-        && request.resource.data.keys().hasOnly(['challengeId', 'name', 'createdBy'])
         && request.resource.data.challengeId is string
+        && canUseCircle(request.resource.data.challengeId)
+        && request.resource.data.keys().hasOnly(['challengeId', 'name', 'createdBy'])
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 40
         && request.resource.data.createdBy == request.auth.uid
