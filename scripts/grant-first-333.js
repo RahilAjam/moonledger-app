@@ -42,6 +42,7 @@ try {
 
   for (const email of emails) {
     const user = await auth.getUserByEmail(email);
+    if (!user.emailVerified) throw new Error(`The Gmail account is not verified yet: ${email}`);
     const claims = user.customClaims || {};
     const plan = claims.plan;
     const activeUntil = Number(claims.planUntil);

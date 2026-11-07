@@ -13,6 +13,7 @@ try {
   const until = parseExpiry(expiryText);
   const auth = await adminAuth();
   const user = await auth.getUserByEmail(email);
+  if (!user.emailVerified) throw new Error("This Gmail account is not verified yet. Ask the user to sign in and verify it first.");
   const claims = { ...(user.customClaims || {}), plan };
   delete claims.planUntil;
   if (until !== null) claims.planUntil = until;
