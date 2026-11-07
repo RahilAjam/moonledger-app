@@ -3,6 +3,7 @@
     "rules": "firestore.rules"
   },
   "hosting": {
+    "site": "moonledger-2b6fb",
     "public": "dist",
     "ignore": [
       "firebase.json",
