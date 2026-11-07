@@ -11,7 +11,7 @@ import {
 } from "firebase/firestore";
 import { firebaseConfig } from "./firebase-config.js";
 import { parseExpenseText, makeExpenseCsv } from "./feature-tools.js";
-import { hasPlus as planHasPlus, planLabel, PLUS_FEATURES, FREE_LIMITS } from "./plan.js";
+import { hasPlus as planHasPlus, PLUS_FEATURES, FREE_LIMITS, PLUS_LAUNCHED } from "./plan.js";
 import { getArchiveSummary, getOldestUpcomingArchive, getVisibleExpenses, localDateKey } from "./archive.js";
 import { readPaymentScreenshot } from "./receipt-ocr.js";
 
@@ -86,25 +86,25 @@ function userCollection(name) {
   return collection(getDatabase(), "users", user.uid, name);
 }
 
-function hasPlus() { return planHasPlus(planClaims); }
+// Plus is not being sold yet. Keep all currently built features available to everyone.
+function hasPlus() { return !PLUS_LAUNCHED || planHasPlus(planClaims); }
 
 function syncPlanUi() {
-  const label = hasPlus() ? planLabel(planClaims) + " · unlocked" : "Free plan";
   const status = $("planStatus");
-  if (status) status.textContent = label;
+  if (status) status.textContent = "Everything is free right now";
   const badge = $("planBadge");
-  if (badge) badge.textContent = hasPlus() ? planLabel(planClaims).toUpperCase() : "FREE";
+  if (badge) badge.textContent = "FREE FOR ALL";
   if (typeof render === "function") render();
 }
 
 const planCard = document.createElement("section");
 planCard.className = "plan-card";
-planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message and shared payment screenshot parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p>';
+planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">MOONLEDGER PLANS</span><h3 id="planStatus">Everything is free right now</h3></div><span class="plan-badge" id="planBadge">FREE FOR ALL</span></div><p>All features that are currently built are free for everyone, including payment screenshot reading, message parsing, smart entry, unlimited quick adds and bills, circles, splits, insights, and share cards.</p><p><strong>Moonledger Plus is coming soon.</strong> There are no subscriptions or payment requirements in this version. We’ll share plan details when Plus is ready.</p><details class="plus-roadmap"><summary>Ideas planned for Plus</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are future ideas and are not available to anyone yet.</p></details>';
 $("accountView").prepend(planCard);
 
 const plusPrompt = document.createElement("div");
 plusPrompt.className = "overlay"; plusPrompt.id = "plusPrompt"; plusPrompt.setAttribute("role", "dialog"); plusPrompt.setAttribute("aria-modal", "true");
-plusPrompt.innerHTML = '<section class="modal plus-modal"><span class="plan-badge">MOONLEDGER PLUS</span><h2>Make <span id="plusPromptFeature">this feature</span> easier</h2><p id="plusPromptDescription">Plus adds time-saving tools, deeper insights, and more ways to share. Your expense history stays yours.</p><div class="hint">Plus access is assigned by Moonledger administrators. Payments are not set up in this version.</div><div class="modal-actions"><button class="primary" id="closePlusPrompt" type="button">Got it</button></div></section>';
+plusPrompt.innerHTML = '<section class="modal plus-modal"><span class="plan-badge">COMING SOON</span><h2>Moonledger Plus</h2><p>Every feature currently in Moonledger is free for everyone. Plus plans will be announced later.</p><div class="hint">No payment or subscription is needed right now.</div><div class="modal-actions"><button class="primary" id="closePlusPrompt" type="button">Got it</button></div></section>';
 document.body.append(plusPrompt);
 
 async function refreshPlan(forceRefresh = false) {
@@ -150,7 +150,7 @@ archiveUi.innerHTML = '<div id="archiveReminder" class="archive-reminder" hidden
 $("cloudStatus").after(archiveUi);
 const archiveModal = document.createElement("div");
 archiveModal.className = "overlay"; archiveModal.id = "archiveModal"; archiveModal.setAttribute("role", "dialog"); archiveModal.setAttribute("aria-modal", "true");
-archiveModal.innerHTML = '<section class="modal"><h2>Your archived history stays yours</h2><p>Older expenses remain safely stored. Free accounts see the latest 12 months in Moonledger. Full history access may be offered for ₹99–149 per year or included with Plus.</p><div class="hint">Unlocking history is coming soon. You can download all your expenses at any time, including archived entries.</div><div class="modal-actions"><button class="primary" id="downloadArchiveCsv" type="button">Download all my data</button><button class="cancel" id="closeArchiveModal" type="button">Close</button></div></section>';
+archiveModal.innerHTML = '<section class="modal"><h2>Your full history stays available</h2><p>All of your expenses remain visible in Moonledger, with no paid archive limit.</p><div class="hint">You can download all of your expenses at any time.</div><div class="modal-actions"><button class="primary" id="downloadArchiveCsv" type="button">Download all my data</button><button class="cancel" id="closeArchiveModal" type="button">Close</button></div></section>';
 document.body.append(archiveModal);
 $("unlockHistory").onclick = () => archiveModal.classList.add("open");
 $("closeArchiveModal").onclick = () => archiveModal.classList.remove("open");

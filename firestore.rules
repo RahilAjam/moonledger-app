@@ -41,21 +41,8 @@ service cloud.firestore {
         && request.auth.token.email.matches('^[^@]+@gmail[.]com$');
     }
 
-    function hasPlusPlan() {
-      return request.auth != null
-        && ('plan' in request.auth.token)
-        && request.auth.token.plan in ['plus', 'lifetime', 'friend', 'owner']
-        && (!('planUntil' in request.auth.token)
-          || (request.auth.token.planUntil is int
-            && request.auth.token.planUntil > request.time.toMillis()));
-    }
-
     function canUseCircle(circleId) {
-      let slotPath = /databases/$(database)/documents/users/$(request.auth.uid)/circleAccess/freeSlot;
-      return hasPlusPlan()
-        || (exists(slotPath)
-          ? get(slotPath).data.circleId == circleId
-          : existsAfter(slotPath) && getAfter(slotPath).data.circleId == circleId);
+      return isSignedInGoogleGmail();
     }
 
     function isCircleMember(circleId) {
@@ -154,7 +141,6 @@ service cloud.firestore {
       match /recurring/{itemId} {
         allow read, delete: if isGoogleOwner(userId);
         allow create, update: if isGoogleOwner(userId)
-          && (request.resource.data.kind != 'subscription' || hasPlusPlan())
           && request.resource.data.keys().hasOnly(['name', 'amount', 'dueDay', 'kind', 'enabled', 'lastReminderKey'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 50
           && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
@@ -166,8 +152,8 @@ service cloud.firestore {
 
       match /debts/{debtId} {
         allow read: if isGoogleOwner(userId);
-        allow delete: if isGoogleOwner(userId) && hasPlusPlan();
-        allow create, update: if isGoogleOwner(userId) && hasPlusPlan()
+        allow delete: if isGoogleOwner(userId);
+        allow create, update: if isGoogleOwner(userId)
           && request.resource.data.keys().hasOnly(['person', 'amount', 'note', 'direction', 'settled', 'createdAt', 'splitId'])
           && request.resource.data.person is string && request.resource.data.person.size() > 0 && request.resource.data.person.size() <= 50
           && request.resource.data.amount is number && request.resource.data.amount > 0 && request.resource.data.amount <= 100000000
@@ -276,14 +262,12 @@ service cloud.firestore {
       }
 
       match /splits/{splitId} {
-        allow read: if isCircleMember(circleId)
-          && (resource.data.participantCount <= 2 || hasPlusPlan());
+        allow read: if isCircleMember(circleId);
         allow create: if isCircleMember(circleId)
           && request.resource.data.keys().hasOnly(['title', 'total', 'participantCount', 'createdBy', 'createdByName', 'createdAt'])
           && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 60
           && request.resource.data.total is number && request.resource.data.total > 0 && request.resource.data.total <= 100000000
           && request.resource.data.participantCount is int && request.resource.data.participantCount >= 2 && request.resource.data.participantCount <= 20
-          && (request.resource.data.participantCount <= 2 || hasPlusPlan())
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.createdByName is string && request.resource.data.createdByName.size() <= 40
           && request.resource.data.createdAt is string;

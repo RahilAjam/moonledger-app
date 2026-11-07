@@ -31,52 +31,15 @@ The app does not read UPI notifications. Users enter UPI, cash, and card expense
 
 The dashboard accepts short descriptions such as `250 Swiggy dinner` and fills a draft amount, note, payment method, and best-guess category for the user to review before saving. Frequent-spend buttons are generated from that account’s own recent entries. The daily spending guide divides the current month’s remaining budget by the number of days left; it is a planning aid, not a guarantee of affordability.
 
-## Free, Plus, and gifted access
+## Free access now; Plus later
 
-Plan access comes from the Firebase Authentication custom claims `plan` and optional `planUntil`. Missing or expired claims mean Free. `plus`, `lifetime`, `friend`, and `owner` receive Plus access. The browser refreshes the ID token at sign-in, when the page becomes active, and periodically; after an admin change, sign out and back in for an immediate refresh. The app never checks a hard-coded email to grant Plus.
+Every feature currently built in Moonledger is free for everyone while Plus is being prepared. This includes smart text entry, pasted bank/UPI message parsing, payment screenshot OCR and Android share-to-app, unlimited quick adds and recurring items, subscriptions, savings circles, larger splits, IOU tracking, insights, recap sharing, and full history. No payment or subscription is needed. Future Plus ideas are shown as coming soon and are not required to use the app.
 
-Free includes expense add/edit/delete, categories and payment methods, one monthly budget and daily guide, a basic monthly report, five quick-add buttons, three natural-language entries per day, an evening reminder, dark/light themes, up to three bills, one savings circle, a two-person split, and full CSV export of all expense history.
+The current plan helper and old administrator grant scripts remain in the repository for future subscription work, but plan claims do not restrict features in this version. New features should remain free until Plus is explicitly launched.
 
-Plus currently enables pasted SMS/UPI parsing and payment screenshot parsing, unlimited smart entries and quick adds, unlimited bills and subscription entries, additional savings circles, splits with more than two people, personal IOU tracking, deeper current-month insights, and watermark-free recap cards. Plus users can upload a payment screenshot from the Expenses screen, or share one directly from Android when Moonledger is installed as a PWA on a supporting browser. The image is processed on-device with OCR; the first OCR may download the recognition engine and English language data. Moonledger prefills a draft for review and never saves it until the user confirms. OCR can misread amounts, merchants, or dates, so verify them. Features that are not implemented are listed in the account view as planned and remain unavailable even to Plus accounts. There are no payments in this version.
+## Full expense history
 
-### Grant or revoke a plan
-
-These administrator scripts use `firebase-admin` and the service account JSON only on your computer. Create a service account key in the Firebase/Google Cloud console, store it outside this repository, and never commit or share it. `.gitignore` excludes common key filenames.
-
-```sh
-export FIREBASE_SERVICE_ACCOUNT_KEY="/absolute/path/to/private-service-account.json"
-npm run plan:grant -- person@gmail.com friend
-npm run plan:grant -- person@gmail.com plus 2027-01-31T23:59:59+05:30
-npm run plan:revoke -- person@gmail.com
-```
-
-Use `plus`, `lifetime`, `friend`, or `owner` for Plus access. An optional expiry is an ISO date/time with its timezone. `revoke` removes the plan claims, and the user becomes Free after refreshing the ID token. The target user must already have signed in once so Firebase Authentication has an account record. Keep the service account key private: it has administrative access to the Firebase project.
-
-For permanent complimentary Plus, run `npm run plan:grant -- person@gmail.com lifetime` with no expiry. This `lifetime` grant stays active until you revoke it with `npm run plan:revoke -- person@gmail.com`.
-
-### Gift one year of Plus to the first 333 users
-
-Prepare a private CSV with one Gmail address per row, ordered by the signup/offer timestamp (the first row is the first eligible user). The first 333 unique addresses are selected; all must already have signed in once. Never commit this list. Set `FIREBASE_SERVICE_ACCOUNT_KEY` as above, then preview the grants:
-
-```sh
-npm run plan:grant-first-333 -- --file /absolute/path/promo-emails.csv
-```
-
-The preview makes no changes, checks that all selected accounts exist, and skips accounts that already have active Plus/friend, lifetime, or owner access. After reviewing the exact 333 entries and expiry, apply the grants:
-
-```sh
-npm run plan:grant-first-333 -- --file /absolute/path/promo-emails.csv --apply
-```
-
-The one-year period starts for all recipients at the time the batch runs. Firebase custom claims are changed by this local administrator script, not by a public app screen. For permanent complimentary Plus, use the `lifetime` command above for each selected Gmail account. Recipients need to refresh their sign-in token; signing out and back in is the simplest method.
-
-The previous Firestore Plus Pass/entitlement flow is retired because clients must not grant their own plan. Existing pass-based users need an admin claim grant using the scripts above.
-
-## Archived history
-
-Free users see expenses dated within the rolling 12-month window, using the device’s local calendar date. The exact boundary date remains visible. Older records stay in Firestore or guest storage and are treated as archived; nothing is deleted. Plus, lifetime, friend, and owner accounts see all months. Free users see the archived count and total and can open an informational “Unlock your history” dialog; payment is not implemented. The dialog describes a possible ₹99–149/year option or history access included with Plus.
-
-When the oldest visible month is within 30 days of archiving, the app shows a calm reminder with a one-tap full CSV download. It includes the remaining days (including the 14- and 7-day periods). Email reminders are a TODO. CSV export is free and always includes every expense, including archived entries, for signed-in and guest accounts.
+All users can see all of their expense history in lists, reports, and charts. CSV export includes all data. No history is archived or hidden based on a plan, and no records are removed because of a plan claim.
 
 ## Checks and deployment
 
@@ -87,9 +50,9 @@ npm run build
 npx firebase-tools deploy --only hosting,firestore:rules
 ```
 
-The rules test command runs against the Firestore Emulator (a compatible Java runtime is required the first time the emulator is started). It checks per-user expense isolation, rejection of client-written plans, Plus-only larger shared splits, and expired claims. To test manually, sign in with a Free Gmail and confirm a three-person split is blocked by the app and rules; then grant a test account `friend`, sign out/in, and verify that it can create the split and view all history. Revoke it and sign out/in to verify Free access returns. Do not test grants with your production owner account unless you intend to change its access.
+The rules test command runs against the Firestore Emulator (a compatible Java runtime is required the first time the emulator is started). It checks per-user expense isolation, rejection of client-written plan claims, and confirms free accounts can use subscriptions, IOUs, multiple circles, and larger splits.
 
-This project has no separate lint or TypeScript check configured; `npm test` covers the plan/archive helpers and `npm run build` checks the production bundle. Firestore rules remain the security boundary for account-private and shared data; client gating is for user experience.
+This project has no separate lint or TypeScript check configured; `npm test` covers the plan/archive helpers and `npm run build` checks the production bundle. Firestore rules remain the security boundary for account-private and shared data.
 
 ## Optional website ads (currently off)
 

@@ -1,4 +1,5 @@
 export const PLAN_NAMES = new Set(["free", "plus", "lifetime", "friend", "owner"]);
+export const PLUS_LAUNCHED = false;
 export const FREE_LIMITS = Object.freeze({ quickAdds: 5, smartEntriesPerDay: 3, recurringItems: 3, savingsCircles: 1, splitPeople: 2 });
 
 export const PLUS_FEATURES = Object.freeze({
