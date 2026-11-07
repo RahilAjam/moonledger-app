@@ -1001,7 +1001,6 @@ $("quickEntryForm").onsubmit = (event) => {
 };
 
 $("uploadPaymentScreenshot").onclick = () => {
-  if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
   $("paymentScreenshot").click();
 };
 $("paymentScreenshot").onchange = async (event) => {
@@ -1029,7 +1028,6 @@ function readSharedPayload(id) {
 }
 
 async function processPaymentScreenshot(file, status) {
-  if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
   status.textContent = "Reading screenshot on this device…";
   try {
     const parsed = await readPaymentScreenshot(file, (progress) => { status.textContent = "Reading screenshot on this device · " + progress + "%"; });

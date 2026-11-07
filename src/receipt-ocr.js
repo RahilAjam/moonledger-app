@@ -73,48 +73,43 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng", 1, { logger: (event) => { if (event.status === "recognizing text") onProgress(Math.round((event.progress || 0) * 100)); } });
   try {
-    // Phone receipts often put the amount in a small block surrounded by a
-    // large dark/blank canvas. Read the full image and focused regions locally.
-    let input = file;
-    let amountRegion = null;
-    let detailsRegion = null;
+    // Read the entire receipt in several locally-processed forms. Tall UPI
+    // screenshots often place the amount and recipient far apart, so a crop
+    // can remove the context needed to tell payment amounts from dates/IDs.
+    let fullImages = [file];
     if (typeof createImageBitmap === "function" && typeof document !== "undefined") {
       const bitmap = await createImageBitmap(file);
-      const scale = Math.min(2, 2600 / Math.max(bitmap.width, bitmap.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(bitmap.width * scale);
-      canvas.height = Math.round(bitmap.height * scale);
-      const context = canvas.getContext("2d", { willReadFrequently: true });
-      context.filter = "grayscale(1) contrast(1.2)";
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      const crop = (x, y, width, height) => {
-        const region = document.createElement("canvas");
-        region.width = Math.round(canvas.width * width);
-        region.height = Math.round(canvas.height * height);
-        const regionContext = region.getContext("2d", { willReadFrequently: true });
-        regionContext.filter = "contrast(1.35)";
-        regionContext.drawImage(canvas, Math.round(canvas.width * x), Math.round(canvas.height * y), region.width, region.height, 0, 0, region.width, region.height);
-        return region;
+      const scale = Math.min(2.5, 2800 / Math.max(bitmap.width, bitmap.height));
+      const makeFullCanvas = (filter) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(bitmap.width * scale);
+        canvas.height = Math.round(bitmap.height * scale);
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        context.filter = filter;
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        return canvas;
       };
-      input = canvas;
-      // GPay-style success receipts place the amount near the top and payment
-      // metadata in a separate block lower down. These crops improve small text.
-      amountRegion = crop(0.16, 0.16, 0.68, 0.34);
-      detailsRegion = crop(0.08, 0.48, 0.84, 0.34);
+      const enhanced = makeFullCanvas("grayscale(1) contrast(1.65) brightness(1.12)");
+      const thresholded = makeFullCanvas("grayscale(1) contrast(3) brightness(1.2)");
+      // A hard black/white version often helps OCR on white receipt text over
+      // dark UPI screens. Keep the original and enhanced forms for logo/color
+      // layouts where thresholding can erase useful strokes.
+      const thresholdContext = thresholded.getContext("2d", { willReadFrequently: true });
+      const pixels = thresholdContext.getImageData(0, 0, thresholded.width, thresholded.height);
+      for (let i = 0; i < pixels.data.length; i += 4) {
+        const value = pixels.data[i] > 118 ? 255 : 0;
+        pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = value;
+      }
+      thresholdContext.putImageData(pixels, 0, 0);
+      fullImages = [enhanced, thresholded];
       bitmap.close();
     }
-    const standard = await worker.recognize(input, { rotateAuto: true });
-    await worker.setParameters({ tessedit_pageseg_mode: "11" });
-    const reads = [standard.data.text];
-    if (detailsRegion) reads.push((await worker.recognize(detailsRegion)).data.text);
-    let amountText = "";
-    if (amountRegion) {
-      await worker.setParameters({ tessedit_pageseg_mode: "7", tessedit_char_whitelist: "0123456789₹.,INR" });
-      amountText = (await worker.recognize(amountRegion)).data.text;
-      reads.push(amountText);
-    } else {
-      const sparse = await worker.recognize(input, { rotateAuto: true });
-      reads.push(sparse.data.text);
+    const reads = [];
+    for (const image of fullImages) {
+      await worker.setParameters({ tessedit_pageseg_mode: "11", tessedit_char_whitelist: "" });
+      reads.push((await worker.recognize(image, { rotateAuto: true })).data.text);
+      await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "" });
+      reads.push((await worker.recognize(image, { rotateAuto: true })).data.text);
     }
     const recognizedText = reads.filter(Boolean).join("\n");
     const passDetails = reads.map(parsePaymentScreenshotText).filter(Boolean);
@@ -131,25 +126,15 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
       if (detail.confidence > group.detail.confidence) group.detail = detail;
       groups.set(detail.amount, group);
     }
-    // The numeric amount crop may omit the rupee glyph entirely. In that case,
-    // accept only a lone short number from that focused region when a separate
-    // region confirms a payment receipt (for example, its "Paid to" line).
-    const hasPaymentLabel = /(?:paid|sent|transferred)\s+to|payment\s+(?:successful|complete|completed)|successfully\s+(?:paid|sent)/i.test(reads.slice(0, 2).join("\n"));
-    const amountOnly = amountText.replace(/\s+/g, "").match(/^(?:₹|INR|Rs\.?|R)?([0-9]{1,6}(?:,[0-9]{3})*(?:\.\d{1,2})?)$/i);
-    if (hasPaymentLabel && amountOnly) {
-      const amount = Number(amountOnly[1].replaceAll(",", ""));
-      if (amount > 0 && amount <= 1000000) {
-        const detail = combined || passDetails[0];
-        const group = groups.get(amount) || { amount, count: 0, score: 0, detail };
-        group.count += 1;
-        group.score += 8;
-        groups.set(amount, group);
-      }
-    }
     const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.score - a.score);
     let chosen = ranked[0];
     if (ranked.length > 1 && ranked[0].count === ranked[1].count && ranked[0].score - ranked[1].score < 4) return null;
-    if (chosen && chosen.count === 1 && chosen.score < 8) return null;
+    // If OCR drops only the currency glyph, accept a short standalone number
+    // from a full-image pass when the same whole image independently contains
+    // the payment confirmation context. Long dates and IDs are never eligible.
+    const confirmedPayment = /(?:paid\s+to|sent\s+to|transferred\s+to|payment\s+(?:successful|complete|completed)|successfully\s+(?:paid|sent))/i.test(recognizedText);
+    const hasStandaloneAmount = reads.some((read) => read.split(/\r?\n/).some((line) => /^(?:₹|INR|Rs\.?|R)?\s*[0-9]{1,6}(?:\.\d{1,2})?\s*$/i.test(line.trim())));
+    if (chosen && chosen.count === 1 && chosen.score < 8 && !(confirmedPayment && hasStandaloneAmount && chosen.score >= 3)) return null;
     if (!chosen && combined) {
       if (combined.confidence < 8) return null;
       chosen = { amount: combined.amount, score: combined.confidence, detail: combined };
