@@ -1,6 +1,5 @@
 import { initializeApp } from "firebase/app";
 import { getMessaging, getToken, isSupported } from "firebase/messaging";
-import { getFunctions, httpsCallable } from "firebase/functions";
 import {
   browserLocalPersistence, getAuth, getRedirectResult, GoogleAuthProvider, onAuthStateChanged,
   setPersistence, signInWithPopup, signInWithRedirect, signOut
@@ -20,7 +19,6 @@ const { vapidKey, ...appOptions } = firebaseConfig;
 const app = initializeApp(appOptions);
 const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
-const functions = getFunctions(app, "us-central1");
 provider.setCustomParameters({ prompt: "select_account" });
 const $ = (id) => document.getElementById(id);
 const themeKey = "moonledger-theme-v1";
@@ -96,64 +94,13 @@ function syncPlanUi() {
   if (status) status.textContent = label;
   const badge = $("planBadge");
   if (badge) badge.textContent = hasPlus() ? planLabel(planClaims).toUpperCase() : "FREE";
-  updatePlanAdminVisibility();
   if (typeof render === "function") render();
 }
 
 const planCard = document.createElement("section");
 planCard.className = "plan-card";
-planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message and shared payment screenshot parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p><section class="online-plan-admin" id="onlinePlanAdmin" hidden><h4>Manage access online</h4><p>Grant Plus or complimentary access to a verified Gmail account that has signed in once.</p><form id="onlinePlanForm"><label for="planTargetEmail">User’s Gmail address</label><input id="planTargetEmail" type="email" autocomplete="off" placeholder="person@gmail.com" required><label for="planTargetType">Access type</label><select id="planTargetType"><option value="plus">Plus gift · one year</option><option value="friend">Permanent friend access</option><option value="lifetime">Lifetime access</option></select><label for="planTargetExpiry">Expiry date</label><input id="planTargetExpiry" type="date"><div class="admin-actions"><button class="primary" type="submit">Grant access</button><button class="quiet-btn" type="button" id="revokePlanAccess">Remove access</button></div></form><div class="account-detail" id="planAdminStatus" role="status" aria-live="polite"></div></section>';
+planCard.innerHTML = '<div class="plan-heading"><div><span class="plan-kicker">YOUR PLAN</span><h3 id="planStatus">Free plan</h3></div><span class="plan-badge" id="planBadge">FREE</span></div><p><strong>Free, forever:</strong> full expense tracking, one monthly budget and report, five quick adds, three smart text entries a day, evening reminders, dark and light themes, three recurring bills, one savings circle, and two-person splits.</p><p><strong>Plus features available now:</strong> message and shared payment screenshot parsing, unlimited smart entry and quick adds, more bills and circles, larger splits and IOU tracking, advanced insights, and shareable recaps. CSV export remains free and includes archived history.</p><details class="plus-roadmap"><summary>Other Plus ideas · not available yet</summary><p>Statement import and missed-spend detection, longer-term trends and forecasts, subscription audit, household tools, multiple budgets and savings pots, custom categories, extra themes, custom reminder times, PDF export, and cloud backup history are planned. They are not usable in this version, including for Plus members.</p></details><p class="account-detail">Plan access is managed by Moonledger administrators. If your plan was just changed, sign out and back in to refresh it.</p>';
 $("accountView").prepend(planCard);
-
-function isPlanOwner() {
-  return planClaims.plan === "owner" && (!planClaims.planUntil || Number(planClaims.planUntil) > Date.now());
-}
-function updatePlanAdminVisibility() { const panel = $("onlinePlanAdmin"); if (panel) panel.hidden = !isPlanOwner(); }
-function defaultPlusGiftExpiry() {
-  const expiry = $("planTargetExpiry");
-  if (!expiry || $("planTargetType").value !== "plus" || expiry.value) return;
-  const date = new Date(); date.setFullYear(date.getFullYear() + 1);
-  expiry.value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-$("planTargetType").addEventListener("change", () => {
-  const expiry = $("planTargetExpiry");
-  if ($("planTargetType").value === "lifetime") expiry.value = "";
-  else if ($("planTargetType").value === "plus" && !expiry.value) defaultPlusGiftExpiry();
-});
-defaultPlusGiftExpiry();
-function planExpiryFromForm() {
-  const value = $("planTargetExpiry").value;
-  if (!value) return null;
-  return new Date(value + "T23:59:59").getTime();
-}
-async function submitPlanAccess(plan) {
-  const status = $("planAdminStatus");
-  const email = $("planTargetEmail").value.trim().toLowerCase();
-  if (!isPlanOwner()) { status.textContent = "Only an owner account can manage plans."; return; }
-  if (email === user.email?.toLowerCase()) { status.textContent = "Use the local recovery process to change your own owner access."; return; }
-  const planUntil = plan === "revoke" ? null : planExpiryFromForm();
-  if (plan === "lifetime" && planUntil) { status.textContent = "Lifetime access cannot have an expiry date."; return; }
-  if (planUntil && planUntil <= Date.now()) { status.textContent = "Choose a future expiry date."; return; }
-  status.textContent = "Updating access…";
-  try {
-    const manage = httpsCallable(functions, "managePlanAccess");
-    const result = await manage({ email, plan, planUntil });
-    const response = result.data || {};
-    status.textContent = plan === "revoke" ? `Access removed for ${response.email}.` : `${response.plan} access granted to ${response.email}${response.planUntil ? ` until ${new Date(response.planUntil).toLocaleDateString()}` : " permanently"}. They should sign out and back in to refresh access.`;
-    if (plan === "revoke") $("planTargetExpiry").value = "";
-  } catch (error) {
-    const messages = { "functions/permission-denied": "Only an owner account can manage plans.", "functions/not-found": "That Gmail account must sign in to Moonledger once before you can grant access.", "functions/failed-precondition": error.message };
-    status.textContent = messages[error.code] || error.message || "Could not update access. Please try again.";
-  }
-}
-planCard.addEventListener("submit", (event) => {
-  if (event.target.id !== "onlinePlanForm") return;
-  event.preventDefault();
-  submitPlanAccess($("planTargetType").value);
-});
-planCard.addEventListener("click", (event) => {
-  if (event.target.id === "revokePlanAccess") submitPlanAccess("revoke");
-});
 
 const plusPrompt = document.createElement("div");
 plusPrompt.className = "overlay"; plusPrompt.id = "plusPrompt"; plusPrompt.setAttribute("role", "dialog"); plusPrompt.setAttribute("aria-modal", "true");

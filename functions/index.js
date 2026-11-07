@@ -1,60 +1,10 @@
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
-const { getAuth } = require("firebase-admin/auth");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
 initializeApp();
 const db = getFirestore();
 const messaging = getMessaging();
-
-function requirePlanAdmin(request) {
-  const claims = request.auth?.token;
-  if (!claims || claims.plan !== "owner") throw new HttpsError("permission-denied", "Only a Moonledger owner can manage plan access.");
-  if (claims.planUntil && Number(claims.planUntil) <= Date.now()) throw new HttpsError("permission-denied", "The owner access for this account has expired.");
-}
-
-function parsePlanRequest(data, allowRevoke = false) {
-  const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
-  if (!/^[-a-z0-9._%+]+@gmail\.com$/i.test(email)) throw new HttpsError("invalid-argument", "Enter a valid Gmail address.");
-  const plan = data.plan;
-  const allowed = allowRevoke ? ["plus", "friend", "lifetime", "revoke"] : ["plus", "friend", "lifetime"];
-  if (!allowed.includes(plan)) throw new HttpsError("invalid-argument", "Choose Plus, permanent friend access, or lifetime access.");
-  let planUntil = null;
-  if (data.planUntil !== undefined && data.planUntil !== null && data.planUntil !== "") {
-    planUntil = Number(data.planUntil);
-    if (!Number.isSafeInteger(planUntil) || planUntil <= Date.now() || planUntil > Date.now() + 10 * 366 * 24 * 60 * 60 * 1000) {
-      throw new HttpsError("invalid-argument", "Expiry must be a future date within ten years.");
-    }
-  }
-  if (plan === "lifetime" && planUntil) throw new HttpsError("invalid-argument", "Lifetime access cannot have an expiry date.");
-  return { email, plan, planUntil };
-}
-
-exports.managePlanAccess = onCall({ region: "us-central1", maxInstances: 2 }, async (request) => {
-  requirePlanAdmin(request);
-  const { email, plan, planUntil } = parsePlanRequest(request.data || {}, true);
-  const auth = getAuth();
-  let target;
-  try { target = await auth.getUserByEmail(email); }
-  catch (error) {
-    if (error.code === "auth/user-not-found") throw new HttpsError("not-found", "That Gmail account has not signed in to Moonledger yet.");
-    throw error;
-  }
-  if (!target.emailVerified || !/@gmail\.com$/i.test(target.email || "")) throw new HttpsError("failed-precondition", "The account must be a verified Gmail account.");
-  if (target.uid === request.auth.uid) throw new HttpsError("failed-precondition", "Use the local recovery process to change your own owner access.");
-  if (target.customClaims?.plan === "owner") throw new HttpsError("failed-precondition", "Owner accounts cannot be changed from the online panel.");
-  const customClaims = { ...(target.customClaims || {}) };
-  delete customClaims.plan;
-  delete customClaims.planUntil;
-  if (plan !== "revoke") {
-    customClaims.plan = plan;
-    if (planUntil) customClaims.planUntil = planUntil;
-  }
-  await auth.setCustomUserClaims(target.uid, customClaims);
-  console.info("Plan access updated", { actor: request.auth.uid, target: target.uid, plan, expires: planUntil || null });
-  return { email, plan, planUntil };
-});
 
 function localClock(date, timezone) {
   const parts = new Intl.DateTimeFormat("en-CA", {

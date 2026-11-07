@@ -43,16 +43,6 @@ Plus currently enables pasted SMS/UPI parsing and payment screenshot parsing, un
 
 These administrator scripts use `firebase-admin` and the service account JSON only on your computer. Create a service account key in the Firebase/Google Cloud console, store it outside this repository, and never commit or share it. `.gitignore` excludes common key filenames.
 
-For routine single-account grants, the owner of Moonledger can now use **Me → Manage access online**. Enter a verified Gmail account that has signed in once, choose Plus, permanent friend access, or lifetime access, optionally choose an expiry date, then grant or remove access. The target account cannot manage plans for itself, owner accounts cannot be changed from this panel, and each recipient must sign out and back in to refresh their access. This is an access-management screen only; it does not take payments. The first 333-user campaign can still be run from the local batch script below.
-
-The online panel uses a Firebase callable Cloud Function. Firebase requires the project to use the Blaze pay-as-you-go plan to deploy Cloud Functions; usage may fit within no-cost quotas, but billing must be enabled. Do not enable billing without reviewing Firebase's current pricing. To publish this panel, deploy the callable and Hosting:
-
-```sh
-npx firebase-tools deploy --only functions:managePlanAccess,hosting --project moonledger-2b6fb
-```
-
-The first owner must still be bootstrapped once with the local admin script (`npm run plan:grant -- yourgmail@gmail.com owner`) using a private service-account key. After that, owner accounts can manage regular Plus and complimentary access online. Do not grant `owner` to other accounts from the website.
-
 ```sh
 export FIREBASE_SERVICE_ACCOUNT_KEY="/absolute/path/to/private-service-account.json"
 npm run plan:grant -- person@gmail.com friend
