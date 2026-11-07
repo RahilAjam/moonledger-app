@@ -1,4 +1,4 @@
-const CACHE = "moonledger-shell-v7";
+const CACHE = "moonledger-shell-v8";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
