@@ -997,6 +997,16 @@ $("quickEntryForm").onsubmit = (event) => {
   openExpenseModal({ ...parsed, date: new Date().toISOString() });
 };
 
+$("uploadPaymentScreenshot").onclick = () => {
+  if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
+  $("paymentScreenshot").click();
+};
+$("paymentScreenshot").onchange = async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (file) await processPaymentScreenshot(file, $("screenshotStatus"));
+};
+
 function readSharedPayload(id) {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open("moonledger-share-inbox-v1", 1);
@@ -1015,6 +1025,26 @@ function readSharedPayload(id) {
   });
 }
 
+async function processPaymentScreenshot(file, status) {
+  if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
+  status.textContent = "Reading screenshot on this device…";
+  try {
+    const parsed = await readPaymentScreenshot(file, (progress) => { status.textContent = "Reading screenshot on this device · " + progress + "%"; });
+    if (!parsed || (parsed.text && !hasCurrencyAmount(parsed.text))) {
+      status.textContent = "Couldn’t confidently find a payment amount. Try a clearer screenshot or add it manually.";
+      return;
+    }
+    status.textContent = "Screenshot read on this device. Review the details and add its purpose.";
+    openExpenseModal({ ...parsed, note: parsed.merchant || "", date: parsed.date || new Date().toISOString() });
+    $("expenseModalTitle").textContent = "Confirm payment screenshot";
+    $("expenseForm").querySelector("p").textContent = "Check the detected details and add what this payment was for.";
+    $("note").placeholder = "What was this payment for? (you can edit the merchant)";
+    setTimeout(() => $("note").focus(), 30);
+  } catch (error) {
+    status.textContent = error.message || "Couldn’t read that screenshot. Try a PNG or JPG image under 12 MB.";
+  }
+}
+
 async function openSharedTextIfPresent() {
   if ((!sharedText && !sharedPayloadId && !shareError) || (!user && !guestMode)) return;
   if (shareError) { $("quickEntryStatus").textContent = "Moonledger couldn’t open that share. Try sharing the screenshot again."; }
@@ -1023,17 +1053,7 @@ async function openSharedTextIfPresent() {
     try {
       const payload = await readSharedPayload(id);
       if (payload?.file) {
-        if (!hasPlus()) { promptPlus("sharedScreenshotParsing"); return; }
-        $("quickEntryStatus").textContent = "Reading the payment screenshot on this device…";
-        const parsed = await readPaymentScreenshot(payload.file, (progress) => { $("quickEntryStatus").textContent = "Reading screenshot on this device · " + progress + "%"; });
-        if (!parsed) { $("quickEntryStatus").textContent = "Couldn’t find a payment amount. Add the expense manually or try a clearer screenshot."; return; }
-        if (parsed.text && !hasCurrencyAmount(parsed.text)) { $("quickEntryStatus").textContent = "Couldn’t confidently find a payment amount. Please add it manually."; return; }
-        $("quickEntryStatus").textContent = "Screenshot read on this device. Confirm the amount, date and merchant, then add its purpose.";
-        openExpenseModal({ ...parsed, note: parsed.merchant || "", date: parsed.date || new Date().toISOString() });
-        $("expenseModalTitle").textContent = "Confirm shared payment";
-        $("expenseForm").querySelector("p").textContent = "Check the detected details and add what this payment was for.";
-        $("note").placeholder = "What was this payment for? (you can edit the merchant)";
-        setTimeout(() => $("note").focus(), 30);
+        await processPaymentScreenshot(payload.file, $("quickEntryStatus"));
         return;
       }
       if (payload?.text) sharedText = payload.text;
