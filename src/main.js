@@ -95,7 +95,6 @@ function syncPlanUi() {
   if (status) status.textContent = "Everything is free right now";
   const badge = $("planBadge");
   if (badge) badge.textContent = "FREE FOR ALL";
-  if (typeof render === "function") render();
 }
 
 const planCard = document.createElement("section");
@@ -122,18 +121,19 @@ async function refreshPlan(forceRefresh = false) {
           planExpiryTimer = setTimeout(checkPlanExpiry, Math.min(planClaims.planUntil - Date.now(), 2147480000));
         } else {
           planClaims = { ...planClaims, plan: "free" };
-          syncPlanUi(); render();
+          syncPlanUi();
+          try { render(); } catch (renderError) { console.warn("The page could not redraw after a plan change.", renderError); }
           if (stopChallenges) watchChallenges();
         }
       };
       checkPlanExpiry();
     }
     if (previousPlan !== hasPlus() && stopChallenges) watchChallenges();
-    syncPlanUi(); render();
+    syncPlanUi();
   } catch (error) {
     console.warn("Plan status could not be refreshed; retaining a still-valid cached plan or using Free.", error);
     if (!planHasPlus(planClaims)) planClaims = {};
-    syncPlanUi(); render();
+    syncPlanUi();
   }
 }
 
@@ -621,9 +621,6 @@ async function showSignedIn(signedInUser) {
   shell.hidden = false;
   mobileNav.hidden = false;
   $("signOutBtn").hidden = false;
-  await refreshPlan(true);
-  clearInterval(planRefreshTimer);
-  planRefreshTimer = setInterval(() => refreshPlan(false), 30 * 60 * 1000);
   $("signOutBtn").textContent = "Sign out";
   $("guestBanner").hidden = true;
   const name = (user.displayName || user.email?.split("@")[0] || "You").trim();
@@ -640,6 +637,12 @@ async function showSignedIn(signedInUser) {
   $("avatar").textContent = name.charAt(0).toUpperCase();
   setView(currentView);
   updateGuestImportPanel();
+  // Claim refresh is independent of opening the account UI. A token/network
+  // problem must not leave the user on the sign-in page or prevent their name
+  // and the correct Home layout from appearing.
+  await refreshPlan(true);
+  clearInterval(planRefreshTimer);
+  planRefreshTimer = setInterval(() => refreshPlan(false), 30 * 60 * 1000);
   // Render the signed-in page before starting network listeners. If Firestore
   // setup is unavailable, keep navigation and the normal layout usable.
   try { startSync(); }
@@ -1616,7 +1619,7 @@ onAuthStateChanged(auth, (signedInUser) => {
   const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
   if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser).catch((error) => {
     console.warn("Account setup failed.", error);
-    $("cloudStatus").textContent = "Your account is open, but some data could not load. Check your connection and refresh.";
+    $("cloudStatus").textContent = "Moonledger couldn’t finish opening. Your account is still signed in; try changing tabs or reloading the page.";
   });
   else {
     if (!signedInUser && guestMode) return;

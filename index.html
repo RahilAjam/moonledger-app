@@ -213,4 +213,14 @@ html[data-theme="light"] .greeting-month{background-color:#fffdf8;color:#28251f;
 html[data-theme="dark"] .cloud-status:not([hidden]){color:#d2c9dd}html[data-theme="light"] .cloud-status:not([hidden]){color:#695b70}
 @media(prefers-reduced-motion:reduce){body.theme-transitioning:before{animation:none;display:none}.theme-glyph,html.theme-transitioning body,html.theme-transitioning .top,html.theme-transitioning .card,html.theme-transitioning .activity,html.theme-transitioning .category-card,html.theme-transitioning .budget-card,html.theme-transitioning .leaderboard-card,html.theme-transitioning .quick-entry,html.theme-transitioning .daily-safe-card,html.theme-transitioning .mobile-nav,html.theme-transitioning .nav,html.theme-transitioning button,html.theme-transitioning input,html.theme-transitioning select{transition:none!important}}
 </style>
+<style>
+/* Keep the view controller's hidden state authoritative even for sections
+   that define their own display mode (grid, flex, etc.). */
+[hidden]{display:none!important}
+.dashboard-actions{box-sizing:border-box;width:100%;min-width:0;grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch}
+.dashboard-action{box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:100%;justify-content:center;overflow:hidden}
+.dashboard-action .action-icon{display:grid;place-items:center;flex:0 0 auto}
+.dashboard-action .action-label{display:block;min-width:0;max-width:100%;text-align:center;line-height:1.25;overflow-wrap:normal;word-break:normal;text-wrap:balance}
+@media(max-width:780px){.dashboard-actions{gap:8px}.dashboard-action{padding-inline:3px}.dashboard-action .action-label{font-size:clamp(9px,2.6vw,12px)}}
+</style>
 </body></html>
