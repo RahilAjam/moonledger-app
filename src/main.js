@@ -56,6 +56,7 @@ let expenseCategoryFilter = "all";
 let expenseSearchText = "";
 let lastCreatedExpense = null;
 let accountGreeting = "Your money, in view.";
+let accountDisplayName = "You";
 let stopExpenses;
 let stopBudget;
 let stopChallenges;
@@ -327,6 +328,7 @@ function setGuestMode() {
   $("signOutBtn").textContent = "Exit guest";
   $("accountEmail").textContent = "Guest · this device";
   $("accountEmail").title = "Guest data is stored only in this browser";
+  accountDisplayName = "Guest";
   accountGreeting = greetingText(); $("greeting").textContent = accountGreeting;
   syncPaydayControl();
   $("accountName").textContent = "Guest space"; $("accountEmailDetail").textContent = "Stored on this device only";
@@ -625,6 +627,7 @@ async function showSignedIn(signedInUser) {
   $("signOutBtn").textContent = "Sign out";
   $("guestBanner").hidden = true;
   const name = (user.displayName || user.email?.split("@")[0] || "You").trim();
+  accountDisplayName = name;
   $("accountEmail").textContent = user.email || "Google account";
   $("accountEmail").title = user.email || "Google account";
   accountGreeting = greetingText(name);
@@ -635,10 +638,14 @@ async function showSignedIn(signedInUser) {
   $("accountAvatar").textContent = name.charAt(0).toUpperCase();
   $("sideName").textContent = "Me";
   $("avatar").textContent = name.charAt(0).toUpperCase();
-  startSync();
-  watchChallenges();
   setView(currentView);
   updateGuestImportPanel();
+  // Render the signed-in page before starting network listeners. If Firestore
+  // setup is unavailable, keep navigation and the normal layout usable.
+  try { startSync(); }
+  catch (error) { console.warn("Account data sync could not start.", error); }
+  try { watchChallenges(); }
+  catch (error) { console.warn("Savings circles could not be loaded.", error); }
   const guestPending = pendingGuestData();
   if (guestPending.expenses.length || guestPending.budgets.length || guestPending.deletions.length || guestPending.recurringItems.length || guestPending.debtItems.length || guestPending.noSpendDates.length) setTimeout(openGuestImportModal, 400);
   else setTimeout(maybeShowOnboarding, 350);
@@ -1545,7 +1552,8 @@ function setView(view) {
   $("main").classList.toggle("home-page", isOverview);
   $("cloudStatus").hidden = guestMode || isOverview;
   $("today").hidden = !isOverview;
-  $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? "Me" : view;
+  $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? accountDisplayName : view;
+  $("monthSelect").hidden = isAccount;
   $("greeting").nextElementSibling.textContent = isOverview ? "Track · Spend · Save · Together" : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
   $("cloudStatus").hidden = guestMode || isOverview;
@@ -1608,7 +1616,7 @@ onAuthStateChanged(auth, (signedInUser) => {
   const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
   if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser).catch((error) => {
     console.warn("Account setup failed.", error);
-    $("cloudStatus").textContent = "Could not refresh your account access. Sign out and in to try again.";
+    $("cloudStatus").textContent = "Your account is open, but some data could not load. Check your connection and refresh.";
   });
   else {
     if (!signedInUser && guestMode) return;
