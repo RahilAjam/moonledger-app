@@ -612,13 +612,16 @@ function showSignedOut() {
 async function showSignedIn(signedInUser) {
   user = signedInUser;
   guestMode = false;
-  await refreshPlan(true);
-  clearInterval(planRefreshTimer);
-  planRefreshTimer = setInterval(() => refreshPlan(false), 30 * 60 * 1000);
+  // Reveal the authenticated app as soon as Firebase confirms the account.
+  // Token refresh can take a while on mobile after the Google redirect; keeping
+  // the sign-in gate visible until it finishes looks like a failed login.
   gate.hidden = true;
   shell.hidden = false;
   mobileNav.hidden = false;
   $("signOutBtn").hidden = false;
+  await refreshPlan(true);
+  clearInterval(planRefreshTimer);
+  planRefreshTimer = setInterval(() => refreshPlan(false), 30 * 60 * 1000);
   $("signOutBtn").textContent = "Sign out";
   $("guestBanner").hidden = true;
   const name = (user.displayName || user.email?.split("@")[0] || "You").trim();
