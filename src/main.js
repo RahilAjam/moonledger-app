@@ -1152,6 +1152,14 @@ function deleteSharedPayload(id) {
 
 async function processPaymentScreenshot(file, status) {
   status.textContent = "Reading screenshot on this device…";
+  // Show the confirmation sheet before starting OCR. On a phone, the first
+  // Tesseract load can take several seconds; waiting to open the sheet made a
+  // successful share look like Moonledger had ignored it.
+  openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+  $("expenseModalTitle").textContent = "Reading payment screenshot…";
+  $("expenseForm").querySelector("p").textContent = "The receipt is being read on this device. You can review the amount before saving.";
+  $("amount").disabled = true;
+  $("saveExpenseBtn").disabled = true;
   try {
     const parsed = await readPaymentScreenshot(file, (progress) => {
       if (typeof progress === "number") status.textContent = "Reading screenshot on this device · " + progress + "%";
@@ -1179,6 +1187,9 @@ async function processPaymentScreenshot(file, status) {
     openExpenseModal({ method: "UPI", date: new Date().toISOString() });
     $("expenseModalTitle").textContent = "Review shared payment";
     $("expenseForm").querySelector("p").textContent = "We couldn’t read this image automatically. Check the receipt and enter the amount before saving.";
+  } finally {
+    $("amount").disabled = false;
+    $("saveExpenseBtn").disabled = false;
   }
 }
 
