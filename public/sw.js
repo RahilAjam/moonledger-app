@@ -27,7 +27,7 @@ self.addEventListener("notificationclick", (event) => {
   }));
 });
 
-const CACHE = "moonledger-shell-v18";
+const CACHE = "moonledger-shell-v19";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
@@ -44,6 +44,13 @@ function saveSharedPayload(payload) {
     };
   });
 }
+
+function redirectTo(path) {
+  // Response.redirect requires an absolute URL. Relative paths throw inside
+  // the share-target fetch handler and silently drop the receipt handoff.
+  return Response.redirect(new URL(path, self.location.origin).href, 303);
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE);
@@ -88,15 +95,15 @@ self.addEventListener("fetch", (event) => {
           .filter((value) => typeof value === "string" && value.trim())
           .join("\n").slice(0, 2000);
         if (file && file.size > 12 * 1024 * 1024) {
-          return Response.redirect("/?shareError=too-large", 303);
+          return redirectTo("/?shareError=too-large");
         }
         if (!file && !text) {
-          return Response.redirect("/?shareError=unsupported", 303);
+          return redirectTo("/?shareError=unsupported");
         }
         if (!file) {
           const id = crypto.randomUUID();
           await saveSharedPayload({ id, text, createdAt: Date.now() });
-          return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
+          return redirectTo("/?sharedPayload=" + encodeURIComponent(id));
         }
         const id = crypto.randomUUID();
         // Keep the cross-context payload as plain bytes plus metadata. This is
@@ -104,10 +111,10 @@ self.addEventListener("fetch", (event) => {
         // into IndexedDB on different WebView implementations.
         const fileData = await file.arrayBuffer();
         await saveSharedPayload({ id, fileData, fileType: file.type, fileName: file.name || "shared-receipt", text, createdAt: Date.now() });
-        return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
+        return redirectTo("/?sharedPayload=" + encodeURIComponent(id));
       } catch (error) {
         console.warn("Could not receive shared content.", error);
-        return Response.redirect("/?shareError=receive", 303);
+        return redirectTo("/?shareError=receive");
       }
     })());
     return;
