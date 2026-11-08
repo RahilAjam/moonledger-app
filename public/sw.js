@@ -1,4 +1,4 @@
-const CACHE = "moonledger-shell-v10";
+const CACHE = "moonledger-shell-v11";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
@@ -25,6 +25,7 @@ self.addEventListener("install", (event) => {
       "/moonledger-icon-192.png",
       "/moonledger-icon-512.png",
       "/moonledger-social.png",
+      "/moonlit-landscape.svg",
     ]);
     const response = await cache.match("/");
     const html = await response.text();

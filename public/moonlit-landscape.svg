@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0.85" y2="1"><stop stop-color="#191a31"/><stop offset=".48" stop-color="#393048"/><stop offset=".76" stop-color="#8a5c70"/><stop offset="1" stop-color="#15131d"/></linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 255 -255 0 1242 190)" gradientUnits="userSpaceOnUse"><stop stop-color="#ffd4ad" stop-opacity=".42"/><stop offset="1" stop-color="#d99bb9" stop-opacity="0"/></radialGradient>
+    <radialGradient id="moon" cx="0" cy="0" r="1" gradientTransform="rotate(105 532 610) scale(83)"><stop stop-color="#fff1d9"/><stop offset=".74" stop-color="#f7d6c1"/><stop offset="1" stop-color="#eab7af"/></radialGradient>
+    <linearGradient id="ridgeBack" x1="0" y1="288" x2="930" y2="476" gradientUnits="userSpaceOnUse"><stop stop-color="#64536b"/><stop offset=".54" stop-color="#493d57"/><stop offset="1" stop-color="#292638"/></linearGradient>
+    <linearGradient id="ridgeMid" x1="520" y1="340" x2="1420" y2="500" gradientUnits="userSpaceOnUse"><stop stop-color="#473c55"/><stop offset=".55" stop-color="#302b42"/><stop offset="1" stop-color="#252332"/></linearGradient>
+    <linearGradient id="ridgeFront" x1="300" y1="390" x2="1110" y2="520" gradientUnits="userSpaceOnUse"><stop stop-color="#242333"/><stop offset="1" stop-color="#15141f"/></linearGradient>
+    <filter id="soft" x="1035" y="35" width="260" height="260" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse"><feGaussianBlur stdDeviation="23"/></filter>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v520H0z"/>
+  <path fill="url(#glow)" d="M0 0h1600v520H0z"/>
+  <circle cx="1242" cy="170" r="74" fill="#f2c8bc" opacity=".24" filter="url(#soft)"/>
+  <circle cx="1242" cy="170" r="52" fill="url(#moon)"/>
+  <path d="M1217 144c14-11 30-12 44-6-13 0-20 8-21 17-1 8-10 12-18 8-7-4-9-13-5-19Z" fill="#fff7e7" opacity=".32"/>
+  <circle cx="1265" cy="185" r="8" fill="#d99c98" opacity=".22"/><circle cx="1221" cy="194" r="5" fill="#d99c98" opacity=".18"/><circle cx="1250" cy="132" r="4" fill="#fff8ed" opacity=".2"/>
+  <g fill="#fff0e8"><circle cx="190" cy="112" r="2" opacity=".48"/><circle cx="375" cy="68" r="1.7" opacity=".4"/><circle cx="714" cy="119" r="1.8" opacity=".46"/><circle cx="1002" cy="77" r="2" opacity=".38"/><circle cx="1440" cy="105" r="1.6" opacity=".46"/><circle cx="1520" cy="229" r="1.8" opacity=".3"/></g>
+  <path d="M0 350 119 324l95 16 138-86 90 39 118-25 87 56 107-32 94 44 101-85 100 55 99-83 104 41 108-90 111 52 129-39v333H0V350Z" fill="url(#ridgeBack)"/>
+  <path d="m0 399 133-63 104 26 115-45 116 52 110-71 110 48 126-58 110 57 114-32 126-70 97 48 111-40 128 70v199H0V399Z" fill="url(#ridgeMid)"/>
+  <path d="m0 434 175-39 117 36 132-51 128 41 104-38 127 51 121-47 110 30 111-64 124 50 120-35 130 58v94H0v-86Z" fill="url(#ridgeFront)"/>
+  <path d="M0 354 119 328l95 16 138-86 90 39 118-25 87 56 107-32 94 44 101-85 100 55 99-83 104 41 108-90 111 52 129-39" stroke="#e1a1a1" stroke-opacity=".2" stroke-width="3"/>
+  <path fill="#11101a" fill-opacity=".28" d="M0 483c220-24 379-6 567 12 258 25 448 5 655-13 149-13 259-13 378 1v37H0v-37Z"/>
+</svg>
