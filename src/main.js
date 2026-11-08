@@ -902,6 +902,8 @@ function updateBudget() {
   const spent = getVisibleExpenses(expenses, hasPlus()).filter((entry) => localDateKey(entry.date).slice(0, 7) === month).reduce((sum, entry) => sum + Number(entry.amount), 0);
   $("budgetCaption").textContent = new Date(parts[0], parts[1] - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   $("leaderPeriod").textContent = $("budgetCaption").textContent;
+  $("dashboardBudgetTotal").textContent = budget ? money(budget) : "Not set";
+  $("dashboardBudgetFoot").textContent = budget ? money(Math.max(0, budget - spent)) + " remaining" : "Set a monthly limit";
   const now = new Date();
   const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
   $("dailySafeCard").classList.toggle("has-budget", Boolean(budget) && month === currentMonth);
@@ -965,7 +967,24 @@ function openExpenseModal(entry = null) {
 }
 function closeExpenseModal() { $("modal").classList.remove("open"); editingExpenseId = null; }
 $("addBtn").onclick = openExpenseModal;
-$("mobileAddBtn").onclick = openExpenseModal;
+$("dashboardAdd").onclick = openExpenseModal;
+$("dashboardScan").onclick = () => {
+  const importDetails = $("smsText").closest("details");
+  if (importDetails) importDetails.open = true;
+  $("smsText").scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => $("smsText").focus(), 220);
+};
+$("dashboardUpload").onclick = () => $("uploadPaymentScreenshot").click();
+$("dashboardCircles").onclick = () => {
+  if (guestMode) {
+    setView("Your account");
+    const tools = document.querySelector(".account-tools");
+    if (tools) tools.open = true;
+    return;
+  }
+  setView("Monthly reports");
+  setTimeout(() => $("leaderboardCard").scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+};
 $("cancelBtn").onclick = closeExpenseModal;
 $("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
 $("expenseList").onclick = async (event) => {
@@ -1458,6 +1477,7 @@ function setView(view) {
   const isReports = view === "Monthly reports";
   const isAccount = view === "Your account";
   $("cards").hidden = isExpenses || isAccount;
+  $("dashboardActions").hidden = !isOverview;
   $("dailySafeCard").hidden = !isOverview;
   $("budgetCard").hidden = isExpenses || isAccount;
   $("reminderCard").hidden = !isOverview;
@@ -1501,13 +1521,25 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem(themeKey, theme);
   const isDark = theme === "dark";
-  themeToggle.textContent = isDark ? "☀" : "☾";
   themeToggle.setAttribute("aria-label", "Switch to " + (isDark ? "light" : "dark") + " mode");
   themeToggle.title = "Switch to " + (isDark ? "light" : "dark") + " mode";
-  const themeMeta = document.querySelector('meta[name="theme-color"]'); if (themeMeta) themeMeta.content = isDark ? "#0d0c19" : "#f7f5fc";
+  const themeMeta = document.querySelector('meta[name="theme-color"]'); if (themeMeta) themeMeta.content = isDark ? "#11101a" : "#fbf8f0";
 }
 setTheme(localStorage.getItem(themeKey) || "dark");
-themeToggle.onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+themeToggle.onclick = () => {
+  const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  const bounds = themeToggle.getBoundingClientRect();
+  const root = document.documentElement;
+  root.style.setProperty("--transition-x", (bounds.left + bounds.width / 2) + "px");
+  root.style.setProperty("--transition-y", (bounds.top + bounds.height / 2) + "px");
+  document.body.classList.add("theme-transitioning");
+  root.classList.add("theme-transitioning");
+  setTheme(nextTheme);
+  window.setTimeout(() => {
+    document.body.classList.remove("theme-transitioning");
+    root.classList.remove("theme-transitioning");
+  }, 900);
+};
 
 for (let index = 0; index < 6; index++) {
   const date = new Date(); date.setDate(1); date.setMonth(date.getMonth() - index);
