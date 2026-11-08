@@ -45,7 +45,9 @@ let stopTools = [];
 let reviewIndex = 0;
 const launchUrl = new URL(location.href);
 let sharedText = launchUrl.searchParams.get("text") || launchUrl.searchParams.get("title") || "";
-let sharedPayloadId = launchUrl.searchParams.get("sharedPayload") || "";
+const pendingShareKey = "moonledger-pending-share-id-v1";
+let sharedPayloadId = launchUrl.searchParams.get("sharedPayload") || sessionStorage.getItem(pendingShareKey) || "";
+if (sharedPayloadId) sessionStorage.setItem(pendingShareKey, sharedPayloadId);
 const shareError = launchUrl.searchParams.get("shareError") || "";
 if (["text", "title", "sharedPayload", "shareError"].some((key) => launchUrl.searchParams.has(key))) history.replaceState({}, "", location.pathname + location.hash);
 let method = "UPI";
@@ -1132,17 +1134,25 @@ async function processPaymentScreenshot(file, status) {
 
 async function openSharedTextIfPresent() {
   if ((!sharedText && !sharedPayloadId && !shareError) || (!user && !guestMode)) return;
-  if (shareError) { $("quickEntryStatus").textContent = "Moonledger couldn’t open that share. Try sharing the screenshot again."; }
+  if (shareError) {
+    sessionStorage.removeItem(pendingShareKey);
+    $("quickEntryStatus").textContent = shareError === "too-large"
+      ? "That screenshot is over 12 MB. Please share a smaller image."
+      : "Moonledger couldn’t receive that image. Try sharing it again or use Upload screenshot.";
+  }
   if (sharedPayloadId) {
     const id = sharedPayloadId; sharedPayloadId = "";
     try {
       const payload = await readSharedPayload(id);
       if (payload?.file) {
+        sessionStorage.removeItem(pendingShareKey);
         await processPaymentScreenshot(payload.file, $("quickEntryStatus"));
         return;
       }
+      sessionStorage.removeItem(pendingShareKey);
       if (payload?.text) sharedText = payload.text;
-    } catch (error) { $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. You can still add the expense manually."; console.warn("Shared payment could not be read.", error); return; }
+      else $("quickEntryStatus").textContent = "The share did not include an image. Try Upload screenshot, or share the receipt as an image.";
+    } catch (error) { $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. You can still add it with Upload screenshot."; console.warn("Shared payment could not be read.", error); return; }
   }
   if (!sharedText) return;
   const parsed = parsePaymentScreenshotText(sharedText);
@@ -1547,7 +1557,7 @@ function setView(view) {
   $("reportTools").hidden = !isReports;
   $("expenseSection").hidden = isAccount;
   $("quickCard").hidden = true;
-  $("quickEntryForm").closest(".quick-entry").hidden = !isExpenses;
+  $("quickEntryForm").closest(".quick-entry").hidden = !(isOverview || isExpenses);
   $("quickAdds").hidden = (!isOverview && !isExpenses) || $("quickAddList").children.length === 0;
   $("footerNote").hidden = !isOverview;
   $("accountView").hidden = !isAccount;

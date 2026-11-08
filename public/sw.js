@@ -1,4 +1,4 @@
-const CACHE = "moonledger-shell-v12";
+const CACHE = "moonledger-shell-v13";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
@@ -50,10 +50,21 @@ self.addEventListener("fetch", (event) => {
     event.respondWith((async () => {
       try {
         const form = await request.formData();
-        const file = form.get("images");
-        const text = String(form.get("text") || form.get("title") || "").slice(0, 2000);
-        if (!(file instanceof Blob) || !file.type.startsWith("image/") || file.size > 12 * 1024 * 1024) {
-          if (!text) return Response.redirect("/?shareError=unsupported", 303);
+        const file = Array.from(form.values()).find((value) => {
+          if (!(value instanceof Blob)) return false;
+          const name = typeof value.name === "string" ? value.name : "";
+          return value.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(name);
+        });
+        const text = [form.get("text"), form.get("title"), form.get("url")]
+          .filter((value) => typeof value === "string" && value.trim())
+          .join("\n").slice(0, 2000);
+        if (file && file.size > 12 * 1024 * 1024) {
+          return Response.redirect("/?shareError=too-large", 303);
+        }
+        if (!file && !text) {
+          return Response.redirect("/?shareError=unsupported", 303);
+        }
+        if (!file) {
           const id = crypto.randomUUID();
           await saveSharedPayload({ id, text, createdAt: Date.now() });
           return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
