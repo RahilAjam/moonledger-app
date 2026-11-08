@@ -1598,7 +1598,9 @@ $("enableAlerts").onclick = async () => {
   if (!vapidKey) { $("reminderText").textContent = "The reminder is saved on this device. Push alerts are not available yet."; $("pushStatus").textContent = "Push alerts are not available yet; the in-page reminder still works."; return; }
   try {
     if (!(await isSupported())) throw new Error("Push messaging is not supported by this browser.");
-    const registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+    // Reuse the single root worker so enabling push cannot replace the
+    // Web Share Target handler used for payment screenshots.
+    const registration = await navigator.serviceWorker.register("/sw.js");
     const token = await getToken(getMessaging(app), { vapidKey, serviceWorkerRegistration: registration });
     if (!token) throw new Error("No push token was created. Check this browser’s notification settings.");
     const tokenKey = "moonledger-push-token-" + user.uid;
