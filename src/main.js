@@ -26,6 +26,7 @@ const reminderKey = "moonledger-reminder-v1";
 const remindedKey = "moonledger-last-reminder-v1";
 const guestDataKey = "moonledger-guest-data-v1";
 const gate = $("authGate");
+const authLoading = $("authLoading");
 const shell = $("appShell");
 const mobileNav = document.querySelector(".mobile-nav");
 const monthSelect = $("monthSelect");
@@ -48,6 +49,7 @@ let sharedText = launchUrl.searchParams.get("text") || launchUrl.searchParams.ge
 const pendingShareKey = "moonledger-pending-share-id-v1";
 let sharedPayloadId = launchUrl.searchParams.get("sharedPayload") || sessionStorage.getItem(pendingShareKey) || "";
 if (sharedPayloadId) sessionStorage.setItem(pendingShareKey, sharedPayloadId);
+let sharedPayloadOpening = false;
 const shareError = launchUrl.searchParams.get("shareError") || "";
 if (["text", "title", "sharedPayload", "shareError"].some((key) => launchUrl.searchParams.has(key))) history.replaceState({}, "", location.pathname + location.hash);
 let method = "UPI";
@@ -326,7 +328,7 @@ function setGuestMode() {
   planClaims = {}; syncPlanUi();
   const guestData = readGuestData(); recurringItems = guestData.recurringItems; debtItems = guestData.debtItems; noSpendDates = guestData.noSpendDates;
   joinedChallenges = []; challengeMemberData = []; stopChallengeListeners();
-  gate.hidden = true; shell.hidden = false; mobileNav.hidden = false; $("signOutBtn").hidden = false;
+  authLoading.hidden = true; gate.hidden = true; shell.hidden = false; mobileNav.hidden = false; $("signOutBtn").hidden = false;
   $("signOutBtn").textContent = "Exit guest";
   $("accountEmail").textContent = "Guest · this device";
   $("accountEmail").title = "Guest data is stored only in this browser";
@@ -604,6 +606,7 @@ $("joinChallenge").onclick = () => $("challengeJoinModal").classList.add("open")
 
 function showSignedOut() {
   clearInterval(planRefreshTimer); clearTimeout(planExpiryTimer);
+  authLoading.hidden = true;
   gate.hidden = false;
   shell.hidden = true;
   mobileNav.hidden = true;
@@ -619,6 +622,7 @@ async function showSignedIn(signedInUser) {
   // Reveal the authenticated app as soon as Firebase confirms the account.
   // Token refresh can take a while on mobile after the Google redirect; keeping
   // the sign-in gate visible until it finishes looks like a failed login.
+  authLoading.hidden = true;
   gate.hidden = true;
   shell.hidden = false;
   mobileNav.hidden = false;
@@ -639,6 +643,9 @@ async function showSignedIn(signedInUser) {
   $("avatar").textContent = name.charAt(0).toUpperCase();
   setView(currentView);
   updateGuestImportPanel();
+  // Open any shared receipt as soon as the account is restored. This must not
+  // wait for token refresh or Firestore listeners before showing confirmation.
+  void openSharedTextIfPresent();
   // Claim refresh is independent of opening the account UI. A token/network
   // problem must not leave the user on the sign-in page or prevent their name
   // and the correct Home layout from appearing.
@@ -713,7 +720,6 @@ function startSync() {
       renderTools(); renderInsights();
     }, (error) => { console.warn("Private account tool could not sync.", error); }));
   }
-  openSharedTextIfPresent();
 }
 
 function watchBudget(month) {
@@ -1099,13 +1105,26 @@ function readSharedPayload(id) {
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const db = request.result;
-      const transaction = db.transaction("inbox", "readwrite");
+      const transaction = db.transaction("inbox", "readonly");
       const store = transaction.objectStore("inbox");
       const get = store.get(id);
       let payload;
-      get.onsuccess = () => { payload = get.result; store.delete(id); };
+      get.onsuccess = () => { payload = get.result; };
       transaction.oncomplete = () => { db.close(); resolve(payload || null); };
       transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
+
+function deleteSharedPayload(id) {
+  return new Promise((resolve) => {
+    const request = indexedDB.open("moonledger-share-inbox-v1", 1);
+    request.onerror = () => resolve();
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("inbox", "readwrite");
+      transaction.objectStore("inbox").delete(id);
+      transaction.oncomplete = transaction.onerror = () => { db.close(); resolve(); };
     };
   });
 }
@@ -1129,43 +1148,56 @@ async function processPaymentScreenshot(file, status) {
     setTimeout(() => $("note").focus(), 30);
   } catch (error) {
     status.textContent = error.message || "Couldn’t read that screenshot. Try a PNG or JPG image under 12 MB.";
+    // Do not strand a share in the Home screen when OCR or image decoding
+    // fails. Always open a manual review draft so the user can still enter it.
+    openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+    $("expenseModalTitle").textContent = "Review shared payment";
+    $("expenseForm").querySelector("p").textContent = "We couldn’t read this image automatically. Check the receipt and enter the amount before saving.";
   }
 }
 
 async function openSharedTextIfPresent() {
   if ((!sharedText && !sharedPayloadId && !shareError) || (!user && !guestMode)) return;
-  if (shareError) {
-    sessionStorage.removeItem(pendingShareKey);
-    $("quickEntryStatus").textContent = shareError === "too-large"
-      ? "That screenshot is over 12 MB. Please share a smaller image."
-      : "Moonledger couldn’t receive that image. Try sharing it again or use Upload screenshot.";
-  }
-  if (sharedPayloadId) {
-    const id = sharedPayloadId; sharedPayloadId = "";
-    try {
+  if (sharedPayloadOpening) return;
+  sharedPayloadOpening = true;
+  try {
+    if (shareError) {
+      sessionStorage.removeItem(pendingShareKey);
+      $("quickEntryStatus").textContent = shareError === "too-large"
+        ? "That screenshot is over 12 MB. Please share a smaller image."
+        : "Moonledger couldn’t receive that image. Try sharing it again or use Upload screenshot.";
+    }
+    if (sharedPayloadId) {
+      const id = sharedPayloadId; sharedPayloadId = "";
       const payload = await readSharedPayload(id);
       if (payload?.file) {
-        sessionStorage.removeItem(pendingShareKey);
         await processPaymentScreenshot(payload.file, $("quickEntryStatus"));
+        await deleteSharedPayload(id);
+        sessionStorage.removeItem(pendingShareKey);
         return;
       }
       sessionStorage.removeItem(pendingShareKey);
       if (payload?.text) sharedText = payload.text;
       else $("quickEntryStatus").textContent = "The share did not include an image. Try Upload screenshot, or share the receipt as an image.";
-    } catch (error) { $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. You can still add it with Upload screenshot."; console.warn("Shared payment could not be read.", error); return; }
+    }
+    if (!sharedText) return;
+    const parsed = parsePaymentScreenshotText(sharedText);
+    if (parsed) {
+      if (!hasPlus()) { promptPlus("messageParsing"); sharedText = ""; return; }
+      $("quickEntryStatus").textContent = "Shared payment details read on this device. Verify them before saving.";
+      openExpenseModal({ ...parsed, date: parsed.date || new Date().toISOString() });
+    } else {
+      $("smsText").value = sharedText;
+      $("smsStatus").textContent = "Shared text is ready. It stays on this device until you choose to save a draft.";
+      $("smsText").closest("details").open = true;
+    }
+    sharedText = "";
+  } catch (error) {
+    $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. Try sharing it again or use Upload screenshot.";
+    console.warn("Shared payment could not be read.", error);
+  } finally {
+    sharedPayloadOpening = false;
   }
-  if (!sharedText) return;
-  const parsed = parsePaymentScreenshotText(sharedText);
-  if (parsed) {
-    if (!hasPlus()) { promptPlus("messageParsing"); sharedText = ""; return; }
-    $("quickEntryStatus").textContent = "Shared payment details read on this device. Verify them before saving.";
-    openExpenseModal({ ...parsed, date: parsed.date || new Date().toISOString() });
-  } else {
-    $("smsText").value = sharedText;
-    $("smsStatus").textContent = "Shared text is ready. It stays on this device until you choose to save a draft.";
-    $("smsText").closest("details").open = true;
-  }
-  sharedText = "";
 }
 
 $("parseSms").onclick = () => {
@@ -1625,19 +1657,16 @@ for (let index = 0; index < 6; index++) {
 $("today").textContent = new Date().toLocaleDateString("en-IN", { weekday: "long", month: "long", day: "numeric" });
 
 onAuthStateChanged(auth, (signedInUser) => {
-  const hasGoogle = signedInUser && signedInUser.providerData.some((entry) => entry.providerId === "google.com");
-  const isVerifiedGmail = signedInUser && signedInUser.emailVerified && /@gmail\.com$/i.test(signedInUser.email || "");
-  if (hasGoogle && isVerifiedGmail) showSignedIn(signedInUser).catch((error) => {
+  // Google is the only sign-in action in Moonledger. Firebase can restore a
+  // valid Google session with a stale `emailVerified` flag after mobile
+  // redirects; never discard that persisted session based on cached profile data.
+  if (signedInUser) showSignedIn(signedInUser).catch((error) => {
     console.warn("Account setup failed.", error);
     $("cloudStatus").textContent = "Moonledger couldn’t finish opening. Your account is still signed in; try changing tabs or reloading the page.";
   });
   else {
-    if (!signedInUser && guestMode) return;
+    if (guestMode) return;
     user = null; planClaims = {}; clearInterval(planRefreshTimer); clearTimeout(planExpiryTimer); stopExpenses?.(); stopBudget?.(); stopChallengeListeners(); showSignedOut();
-    if (signedInUser) {
-      signOut(auth).catch(() => {});
-      $("authError").textContent = "Moonledger needs a verified @gmail.com account. Sign in with Gmail to continue.";
-    }
   }
 });
 window.addEventListener("focus", () => { if (user) refreshPlan(true); });
