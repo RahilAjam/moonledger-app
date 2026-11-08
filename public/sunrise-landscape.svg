@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 520" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#f8f6f4"/><stop offset=".48" stop-color="#fff0d9"/><stop offset=".78" stop-color="#ffd88e"/><stop offset="1" stop-color="#f2c66f"/></linearGradient>
+    <radialGradient id="sunGlow"><stop stop-color="#fffef0"/><stop offset=".4" stop-color="#fff3bd" stop-opacity=".85"/><stop offset="1" stop-color="#ffd66e" stop-opacity="0"/></radialGradient>
+    <linearGradient id="far" x1="0" y1="300" x2="1180" y2="495"><stop stop-color="#f3d8a8"/><stop offset=".55" stop-color="#ebcb88"/><stop offset="1" stop-color="#d6af68"/></linearGradient>
+    <linearGradient id="mid" x1="580" y1="351" x2="1485" y2="512"><stop stop-color="#eac57d"/><stop offset=".52" stop-color="#d9ad60"/><stop offset="1" stop-color="#c28c4d"/></linearGradient>
+    <linearGradient id="front" x1="250" y1="416" x2="1160" y2="520"><stop stop-color="#e2bd7c"/><stop offset="1" stop-color="#d7a45d"/></linearGradient>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v520H0z"/>
+  <circle cx="1242" cy="170" r="190" fill="url(#sunGlow)"/>
+  <circle cx="1242" cy="170" r="61" fill="#ffe187"/>
+  <circle cx="1242" cy="170" r="48" fill="#fff2b9"/>
+  <path d="M0 350 119 324l95 16 138-86 90 39 118-25 87 56 107-32 94 44 101-85 100 55 99-83 104 41 108-90 111 52 129-39v333H0V350Z" fill="url(#far)"/>
+  <path d="m0 399 133-63 104 26 115-45 116 52 110-71 110 48 126-58 110 57 114-32 126-70 97 48 111-40 128 70v199H0V399Z" fill="url(#mid)"/>
+  <path d="m0 434 175-39 117 36 132-51 128 41 104-38 127 51 121-47 110 30 111-64 124 50 120-35 130 58v94H0v-86Z" fill="url(#front)"/>
+  <path d="M0 354 119 328l95 16 138-86 90 39 118-25 87 56 107-32 94 44 101-85 100 55 99-83 104 41 108-90 111 52 129-39" stroke="#fff2d5" stroke-opacity=".72" stroke-width="4"/>
+  <path d="M130 105c20 9 29 20 36 37 7-17 16-28 36-37-20-9-29-20-36-37-7 17-16 28-36 37ZM991 133c10 4 15 10 19 20 4-10 9-16 19-20-10-4-15-10-19-20-4 10-9 16-19 20Z" fill="#fff" fill-opacity=".66"/>
+  <path fill="#fbf8f0" fill-opacity=".33" d="M0 483c220-24 379-6 567 12 258 25 448 5 655-13 149-13 259-13 378 1v37H0v-37Z"/>
+</svg>

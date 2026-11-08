@@ -197,13 +197,55 @@ function readGuestData() {
 function writeGuestData(data) { localStorage.setItem(guestDataKey, JSON.stringify(data)); }
 function paydayStorageKey() { return "moonledger-payday-" + (user?.uid || "guest"); }
 function onboardingStorageKey() { return "moonledger-onboarded-" + (user?.uid || "guest"); }
+function featureGuideStorageKey() { return "moonledger-feature-guide-v1-" + (user?.uid || "guest"); }
 function quickPresetStorageKey() { return "moonledger-quick-presets-" + (user?.uid || "guest"); }
 function readQuickPresets() {
   try { const value = JSON.parse(localStorage.getItem(quickPresetStorageKey()) || "[]"); return Array.isArray(value) ? value.slice(0, 5) : []; }
   catch { return []; }
 }
+const featureGuideSteps = [
+  { icon: "◒", title: "Your money, in view", text: "See this month’s spending, your weekly total, entries, and budget together." },
+  { icon: "◎", title: "Know what feels safe", text: "Set a monthly budget to get a daily spending guide and see how much room remains." },
+  { icon: "＋", title: "Log a spend your way", text: "Add it manually, use a quick-add chip, describe it in a note, or share a payment screenshot and review the details." },
+  { icon: "✦", title: "Find your patterns", text: "Reports break spending into categories. Make a private savings circle when you want to compare progress with friends." }
+];
+let featureGuideIndex = 0;
+function renderFeatureGuide() {
+  const step = featureGuideSteps[featureGuideIndex];
+  $("featureGuideMark").textContent = step.icon;
+  $("featureGuideTitle").textContent = step.title;
+  $("featureGuideText").textContent = step.text;
+  $("featureGuideStep").textContent = (featureGuideIndex + 1) + " of " + featureGuideSteps.length;
+  $("featureGuideDots").innerHTML = featureGuideSteps.map((_, index) => '<i class="' + (index === featureGuideIndex ? "active" : "") + '"></i>').join("");
+  $("featureGuideBack").hidden = featureGuideIndex === 0;
+  $("featureGuideNext").textContent = featureGuideIndex === featureGuideSteps.length - 1 ? "Done" : "Next";
+}
+function openFeatureGuide(force = false) {
+  if ((!user && !guestMode) || (!force && localStorage.getItem(featureGuideStorageKey()))) return;
+  featureGuideIndex = 0;
+  renderFeatureGuide();
+  $("featureGuideModal").classList.add("open");
+  setTimeout(() => $("featureGuideNext").focus(), 60);
+}
+function maybeShowFeatureGuide() {
+  if ((!user && !guestMode) || $("onboardingModal").classList.contains("open")) return;
+  openFeatureGuide(false);
+}
+function closeFeatureGuide() {
+  localStorage.setItem(featureGuideStorageKey(), "done");
+  $("featureGuideModal").classList.remove("open");
+}
+$("featureGuideSkip").onclick = closeFeatureGuide;
+$("featureGuideBack").onclick = () => { featureGuideIndex = Math.max(0, featureGuideIndex - 1); renderFeatureGuide(); };
+$("featureGuideNext").onclick = () => {
+  if (featureGuideIndex >= featureGuideSteps.length - 1) { closeFeatureGuide(); return; }
+  featureGuideIndex += 1;
+  renderFeatureGuide();
+};
+$("replayFeatureGuide").onclick = () => openFeatureGuide(true);
 function maybeShowOnboarding() {
-  if ((!user && !guestMode) || localStorage.getItem(onboardingStorageKey()) || sharedText || $("guestImportModal").classList.contains("open")) return;
+  if ((!user && !guestMode) || sharedText || $("guestImportModal").classList.contains("open")) return;
+  if (localStorage.getItem(onboardingStorageKey())) { maybeShowFeatureGuide(); return; }
   $("onboardingBudget").value = budgets[monthSelect.value] || "";
   const payday = localStorage.getItem(paydayStorageKey()); $("onboardingPayday").value = payday || "";
   $("onboardingModal").classList.add("open");
@@ -212,7 +254,7 @@ function maybeShowOnboarding() {
   $("onboardingNext").hidden = false; $("onboardingFinish").hidden = true;
   setTimeout(() => $("onboardingBudget").focus(), 100);
 }
-function closeOnboarding() { localStorage.setItem(onboardingStorageKey(), "done"); $("onboardingModal").classList.remove("open"); }
+function closeOnboarding() { localStorage.setItem(onboardingStorageKey(), "done"); $("onboardingModal").classList.remove("open"); setTimeout(() => maybeShowFeatureGuide(), 240); }
 $("onboardingNext").onclick = () => {
   $("onboardingBudgetStep").hidden = true; $("onboardingPicksStep").hidden = false;
   $("onboardingStepLabel").textContent = "A softer start · 2 of 2";
@@ -879,7 +921,7 @@ function renderContent() {
   const categories = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 4);
   $("categories").innerHTML = categories.length
     ? categories.map(([name, amount]) => '<div class="category"><div class="cat-head"><span>' + escapeHtml(name) + '</span><small>' + money(amount) + '</small></div><div class="bar"><i style="width:' + Math.max(4, Math.round(amount / total * 100)) + '%"></i></div></div>').join("")
-    : '<div class="empty">Your category breakdown will show up here.</div>';
+    : '<div class="empty">Add a spend to see your category breakdown.</div>';
   const palette = ["#68e2cc", "#9680ff", "#ef84c8", "#ffc66d", "#72b8ff", "#f28d7d", "#70d9e8"];
   let cursor = 0;
   const allCategories = Object.entries(totals).sort((a, b) => b[1] - a[1]);
@@ -903,14 +945,15 @@ function updateBudget() {
   $("budgetCaption").textContent = new Date(parts[0], parts[1] - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   $("leaderPeriod").textContent = $("budgetCaption").textContent;
   $("dashboardBudgetTotal").textContent = budget ? money(budget) : "Not set";
-  $("dashboardBudgetFoot").textContent = budget ? money(Math.max(0, budget - spent)) + " remaining" : "Set a monthly limit";
+  $("dashboardBudgetFoot").textContent = budget ? money(Math.max(0, budget - spent)) + " remaining" : "Set a target below";
   const now = new Date();
   const currentMonth = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
   $("dailySafeCard").classList.toggle("has-budget", Boolean(budget) && month === currentMonth);
   $("dailySafeCard").style.setProperty("--budget-progress", Math.min(100, budget ? spent / budget * 100 : 0) + "%");
   $("dailySafeSetBudget").hidden = Boolean(budget);
   if (!budget) {
-    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = true; $("budgetNumbers").textContent = "";
+    $("budgetEmpty").hidden = false; $("budgetProgress").hidden = true; $("setBudget").hidden = false; $("budgetNumbers").textContent = "";
+    $("dashboardSafeToday").textContent = "Set a budget below";
     $("dailySafeCard").classList.add("is-empty");
     $("dailySafeAmount").textContent = "";
     $("dailySafeNote").textContent = month === currentMonth ? "Set a budget to see your daily number." : "Choose the current month and set a budget to see your daily number.";
@@ -934,12 +977,14 @@ function updateBudget() {
     const daysLeft = Math.max(1, Math.ceil((nextPayday - now) / 86400000) + 1);
     const remaining = Math.max(0, budget - spent);
     $("dailySafeAmount").textContent = money(Math.floor(remaining / Math.max(daysLeft, 1)));
+    $("dashboardSafeToday").textContent = money(Math.floor(remaining / Math.max(daysLeft, 1))) + " / day";
     const ringColor = ratio >= 1 ? "#ff827e" : ratio >= 0.8 ? "#ffc45c" : "#6de5bd";
     $("dailySafeCard").style.setProperty("--ring-color", ringColor);
     $("dailySafeNote").textContent = remaining ? money(remaining) + " left · " + daysLeft + (daysLeft === 1 ? " day" : " days") + (configuredDay ? " to payday · you're on track" : " left this month") : "You’ve reached this month’s budget. Adjust it if your plans changed.";
   } else {
     $("dailySafeAmount").textContent = "—";
     $("dailySafeNote").textContent = "Choose the current month to see a daily spending guide.";
+    $("dashboardSafeToday").textContent = "Choose current month";
   }
 }
 
@@ -969,6 +1014,7 @@ function closeExpenseModal() { $("modal").classList.remove("open"); editingExpen
 $("addBtn").onclick = openExpenseModal;
 $("dashboardAdd").onclick = openExpenseModal;
 $("dashboardScan").onclick = () => {
+  setView("Expenses");
   const importDetails = $("smsText").closest("details");
   if (importDetails) importDetails.open = true;
   $("smsText").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -986,7 +1032,10 @@ $("dashboardCircles").onclick = () => {
   setTimeout(() => $("leaderboardCard").scrollIntoView({ behavior: "smooth", block: "center" }), 100);
 };
 $("cancelBtn").onclick = closeExpenseModal;
-$("allBtn").onclick = () => { showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render(); };
+$("allBtn").onclick = () => {
+  if (currentView === "Overview") { setView("Monthly reports"); return; }
+  showAll = !showAll; $("allBtn").textContent = showAll ? "Show less" : currentView === "Expenses" ? "Show all" : "See all"; render();
+};
 $("expenseList").onclick = async (event) => {
   const button = event.target.closest("[data-expense-action]");
   if (!button) return;
@@ -1478,29 +1527,31 @@ function setView(view) {
   const isAccount = view === "Your account";
   $("cards").hidden = isExpenses || isAccount;
   $("dashboardActions").hidden = !isOverview;
-  $("dailySafeCard").hidden = !isOverview;
+  $("dailySafeCard").hidden = true;
   $("budgetCard").hidden = isExpenses || isAccount;
-  $("reminderCard").hidden = !isOverview;
-  $("reminderCard").hidden = !isOverview || new Date().getHours() < 21;
-  $("insightCard").hidden = !isOverview;
+  $("reminderCard").hidden = !isAccount;
+  $("insightCard").hidden = !isReports;
   $("reportTools").hidden = !isReports;
   $("expenseSection").hidden = isAccount;
-  $("quickCard").hidden = !isOverview;
-  $("quickEntryForm").closest(".quick-entry").hidden = !isOverview;
-  $("quickAdds").hidden = isAccount || $("quickAddList").children.length === 0;
+  $("quickCard").hidden = true;
+  $("quickEntryForm").closest(".quick-entry").hidden = !isExpenses;
+  $("quickAdds").hidden = (!isOverview && !isExpenses) || $("quickAddList").children.length === 0;
   $("footerNote").hidden = !isOverview;
   $("accountView").hidden = !isAccount;
-  $("addBtn").hidden = isAccount;
+  $("addBtn").hidden = isAccount || isOverview;
+  $("main").classList.toggle("home-page", isOverview);
+  $("cloudStatus").hidden = guestMode || isOverview;
   $("today").hidden = !isOverview;
   $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? "Me" : view;
-  $("greeting").nextElementSibling.textContent = isOverview ? "A calm little picture of where it went." : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
+  $("greeting").nextElementSibling.textContent = isOverview ? "Track · Spend · Save · Together" : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
-  $("cloudStatus").hidden = guestMode;
+  $("cloudStatus").hidden = guestMode || isOverview;
   if ($("accountCloudStatus") && guestMode) $("accountCloudStatus").textContent = "Not syncing · guest mode";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
+  $("expenseSection").classList.toggle("overview-view", isOverview);
   $("main").classList.toggle("reports-page", isReports);
-  $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Today’s spends";
+  $("expenseSection").querySelector(".section-head h2").textContent = isExpenses ? "All expenses" : isReports ? "Monthly category breakdown" : "Your insights";
   $("leaderboardCard").hidden = guestMode || (!isOverview && !isReports);
   $("expenseFilters").hidden = !isExpenses;
   if (isExpenses && $("expenseSearch").value !== expenseSearchText) $("expenseSearch").value = expenseSearchText;
@@ -1512,7 +1563,7 @@ function setView(view) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   render();
 }
-setInterval(() => { if (currentView === "Overview") $("reminderCard").hidden = new Date().getHours() < 21; }, 60000);
+setInterval(() => { if (currentView === "Your account") $("reminderCard").hidden = false; }, 60000);
 document.querySelectorAll(".nav[data-view]").forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
 document.querySelectorAll(".mobile-nav button[data-nav]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.nav)));
 
