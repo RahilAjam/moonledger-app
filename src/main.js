@@ -1116,6 +1116,27 @@ function readSharedPayload(id) {
   });
 }
 
+function readLatestSharedPayload() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("moonledger-share-inbox-v1", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("inbox", { keyPath: "id" });
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("inbox", "readonly");
+      const get = transaction.objectStore("inbox").getAll();
+      let payload = null;
+      get.onsuccess = () => {
+        const recent = (get.result || []).filter((entry) => Number(entry.createdAt) >= Date.now() - 30 * 60 * 1000);
+        recent.sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+        payload = recent[0] || null;
+      };
+      transaction.oncomplete = () => { db.close(); resolve(payload); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
+
 function deleteSharedPayload(id) {
   return new Promise((resolve) => {
     const request = indexedDB.open("moonledger-share-inbox-v1", 1);
@@ -1162,7 +1183,7 @@ async function processPaymentScreenshot(file, status) {
 }
 
 async function openSharedTextIfPresent() {
-  if ((!sharedText && !sharedPayloadId && !shareError) || (!user && !guestMode)) return;
+  if ((!user && !guestMode)) return;
   if (sharedPayloadOpening) return;
   sharedPayloadOpening = true;
   try {
@@ -1171,12 +1192,24 @@ async function openSharedTextIfPresent() {
       $("quickEntryStatus").textContent = shareError === "too-large"
         ? "That screenshot is over 12 MB. Please share a smaller image."
         : "Moonledger couldn’t receive that image. Try sharing it again or use Upload screenshot.";
+      openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+      $("expenseModalTitle").textContent = "Enter shared payment";
+      $("expenseForm").querySelector("p").textContent = "The screenshot did not come through. You can enter the amount here or upload the image from Home.";
+    }
+    if (!sharedPayloadId && !sharedText && !shareError) {
+      // Some Android share providers reopen the app without its redirect query
+      // or session storage. Recover the most recent receipt saved locally by
+      // the service worker instead of silently losing the share.
+      const queued = await readLatestSharedPayload();
+      if (queued) sharedPayloadId = queued.id;
     }
     if (sharedPayloadId) {
       const id = sharedPayloadId; sharedPayloadId = "";
       const payload = await readSharedPayload(id);
-      if (payload?.file) {
-        await processPaymentScreenshot(payload.file, $("quickEntryStatus"));
+      const file = payload?.file || (payload?.fileData ? new Blob([payload.fileData], { type: payload.fileType || "application/octet-stream" }) : null);
+      if (file) {
+        $("quickEntryStatus").textContent = "Receipt received. Reading it on this device…";
+        await processPaymentScreenshot(file, $("quickEntryStatus"));
         await deleteSharedPayload(id);
         sessionStorage.removeItem(pendingShareKey);
         return;

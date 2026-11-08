@@ -1,4 +1,4 @@
-const CACHE = "moonledger-shell-v15";
+const CACHE = "moonledger-shell-v16";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
@@ -70,7 +70,11 @@ self.addEventListener("fetch", (event) => {
           return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
         }
         const id = crypto.randomUUID();
-        await saveSharedPayload({ id, file, text, createdAt: Date.now() });
+        // Keep the cross-context payload as plain bytes plus metadata. This is
+        // more dependable than structured-cloning Android's File/URI wrapper
+        // into IndexedDB on different WebView implementations.
+        const fileData = await file.arrayBuffer();
+        await saveSharedPayload({ id, fileData, fileType: file.type, fileName: file.name || "shared-receipt", text, createdAt: Date.now() });
         return Response.redirect("/?sharedPayload=" + encodeURIComponent(id), 303);
       } catch (error) {
         console.warn("Could not receive shared content.", error);
