@@ -217,11 +217,12 @@ html[data-theme="dark"] .cloud-status:not([hidden]){color:#d2c9dd}html[data-them
 /* Keep the view controller's hidden state authoritative even for sections
    that define their own display mode (grid, flex, etc.). */
 [hidden]{display:none!important}
-.dashboard-actions{box-sizing:border-box;width:100%;min-width:0;grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch}
+.dashboard-actions{box-sizing:border-box;width:100%;min-width:0;grid-template-columns:repeat(4,minmax(0,1fr));align-items:stretch;margin:24px 0}
 .dashboard-action{box-sizing:border-box;width:100%;min-width:0;max-width:100%;height:auto;justify-content:center;overflow:hidden}
 .dashboard-action .action-icon{display:grid;place-items:center;flex:0 0 auto}
 .dashboard-action .action-label{display:block;min-width:0;max-width:100%;text-align:center;line-height:1.25;overflow-wrap:normal;word-break:normal;text-wrap:balance}
 @media(max-width:780px){.dashboard-actions{gap:8px}.dashboard-action{padding-inline:3px}.dashboard-action .action-label{font-size:clamp(9px,2.6vw,12px)}}
-@media(max-width:420px){.dashboard-actions{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:20px}.dashboard-action{min-height:96px;padding:10px 8px;gap:7px}.dashboard-action .action-label{font-size:12px;overflow-wrap:normal;text-wrap:balance}.cards .summary-stat{padding-inline:3px}.cards .summary-stat small{white-space:normal;text-wrap:balance}.cards .summary-stat strong{font-size:12px}}
+@media(max-width:780px){.dashboard-actions{margin:20px 0}}
+@media(max-width:420px){.dashboard-actions{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:18px 0 20px}.dashboard-action{min-height:96px;padding:10px 8px;gap:7px}.dashboard-action .action-label{font-size:12px;overflow-wrap:normal;text-wrap:balance}.cards .summary-stat{padding-inline:3px}.cards .summary-stat small{white-space:normal;text-wrap:balance}.cards .summary-stat strong{font-size:12px}}
 </style>
 </body></html>
