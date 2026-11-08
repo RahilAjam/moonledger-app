@@ -1132,7 +1132,12 @@ function deleteSharedPayload(id) {
 async function processPaymentScreenshot(file, status) {
   status.textContent = "Reading screenshot on this device…";
   try {
-    const parsed = await readPaymentScreenshot(file, (progress) => { status.textContent = "Reading screenshot on this device · " + progress + "%"; });
+    const parsed = await readPaymentScreenshot(file, (progress) => {
+      if (typeof progress === "number") status.textContent = "Reading screenshot on this device · " + progress + "%";
+      else if (progress?.status === "recognizing text") status.textContent = "Reading screenshot on this device · " + progress.progress + "%";
+      else if (/language|traineddata/i.test(progress?.status || "")) status.textContent = "Preparing the receipt reader…";
+      else status.textContent = "Opening the on-device receipt reader…";
+    });
     if (!parsed) {
       status.textContent = "We couldn’t read the amount reliably. Check the receipt and enter it manually.";
       openExpenseModal({ method: "UPI", date: new Date().toISOString() });

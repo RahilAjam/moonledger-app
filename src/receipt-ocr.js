@@ -126,29 +126,44 @@ export function parsePaymentScreenshotText(text) {
 }
 
 export async function readPaymentScreenshot(file, onProgress = () => {}) {
-  if (!(file instanceof Blob) || !file.type.startsWith("image/")) throw new Error("Share a payment screenshot in PNG, JPG, or WebP format.");
+  if (!(file instanceof Blob)) throw new Error("Share a payment screenshot in PNG, JPG, or WebP format.");
   if (file.size > 12 * 1024 * 1024) throw new Error("That image is too large. Share a screenshot under 12 MB.");
   const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker("eng", 1, { logger: (event) => { if (event.status === "recognizing text") onProgress(Math.round((event.progress || 0) * 100)); } });
+  const worker = await createWorker("eng", 1, { logger: (event) => {
+    if (event.status === "recognizing text") onProgress({ status: event.status, progress: Math.round((event.progress || 0) * 100) });
+    else onProgress({ status: event.status, progress: null });
+  } });
   try {
-    // Read the entire receipt in several locally-processed forms. Tall UPI
-    // screenshots often place the amount and recipient far apart, so a crop
-    // can remove the context needed to tell payment amounts from dates/IDs.
+    // Verify the actual image signature too. Some Android share providers
+    // label a valid JPEG as application/octet-stream.
+    let image = file;
+    if (!file.type.startsWith("image/")) {
+      const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+      const isPng = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47;
+      const isJpeg = header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+      const isWebp = String.fromCharCode(...header.slice(0, 4)) === "RIFF" && String.fromCharCode(...header.slice(8, 12)) === "WEBP";
+      if (!isPng && !isJpeg && !isWebp) throw new Error("The shared file isn’t a readable image. Try sharing the receipt image itself.");
+      image = new Blob([file], { type: isPng ? "image/png" : isWebp ? "image/webp" : "image/jpeg" });
+    }
+
+    // Read the whole receipt and focused, enlarged regions. Full-page OCR
+    // preserves context for separating the payment amount from IDs; enlarged
+    // header regions help on tall Android UPI receipts where text is tiny.
     let fullImages = [file];
     if (typeof createImageBitmap === "function" && typeof document !== "undefined") {
-      const bitmap = await createImageBitmap(file);
-      const scale = Math.min(2.5, 2800 / Math.max(bitmap.width, bitmap.height));
-      const makeFullCanvas = (filter) => {
+      const bitmap = await createImageBitmap(image);
+      const scale = Math.min(1.7, 3200 / Math.max(bitmap.width, bitmap.height));
+      const makeCanvas = (filter, top = 0, height = bitmap.height) => {
         const canvas = document.createElement("canvas");
-        canvas.width = Math.round(bitmap.width * scale);
-        canvas.height = Math.round(bitmap.height * scale);
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
         const context = canvas.getContext("2d", { willReadFrequently: true });
         context.filter = filter;
-        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, top, bitmap.width, height, 0, 0, canvas.width, canvas.height);
         return canvas;
       };
-      const enhanced = makeFullCanvas("grayscale(1) contrast(1.65) brightness(1.12)");
-      const thresholded = makeFullCanvas("grayscale(1) contrast(3) brightness(1.2)");
+      const enhanced = makeCanvas("grayscale(1) contrast(1.65) brightness(1.12)");
+      const thresholded = makeCanvas("grayscale(1) contrast(3) brightness(1.2)");
       // A hard black/white version often helps OCR on white receipt text over
       // dark UPI screens. Keep the original and enhanced forms for logo/color
       // layouts where thresholding can erase useful strokes.
@@ -159,15 +174,18 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
         pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = value;
       }
       thresholdContext.putImageData(pixels, 0, 0);
-      fullImages = [enhanced, thresholded];
+      const header = makeCanvas("grayscale(1) contrast(1.8) brightness(1.1)", 0, Math.round(bitmap.height * 0.56));
+      const headerThresholded = makeCanvas("grayscale(1) contrast(3) brightness(1.2)", 0, Math.round(bitmap.height * 0.56));
+      fullImages = [enhanced, thresholded, header, headerThresholded];
       bitmap.close();
     }
     const reads = [];
-    for (const image of fullImages) {
-      await worker.setParameters({ tessedit_pageseg_mode: "11", tessedit_char_whitelist: "" });
-      reads.push((await worker.recognize(image, { rotateAuto: true })).data.text);
-      await worker.setParameters({ tessedit_pageseg_mode: "6", tessedit_char_whitelist: "" });
-      reads.push((await worker.recognize(image, { rotateAuto: true })).data.text);
+    for (const [index, sourceImage] of fullImages.entries()) {
+      const modes = index >= 3 ? ["6"] : ["11", "6"];
+      for (const mode of modes) {
+        await worker.setParameters({ tessedit_pageseg_mode: mode, tessedit_char_whitelist: "" });
+        reads.push((await worker.recognize(sourceImage, { rotateAuto: true })).data.text);
+      }
     }
     const recognizedText = reads.filter(Boolean).join("\n");
     const passDetails = reads.map(parsePaymentScreenshotText).filter(Boolean);

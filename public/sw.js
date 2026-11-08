@@ -1,4 +1,4 @@
-const CACHE = "moonledger-shell-v14";
+const CACHE = "moonledger-shell-v15";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {
@@ -50,11 +50,11 @@ self.addEventListener("fetch", (event) => {
     event.respondWith((async () => {
       try {
         const form = await request.formData();
-        const file = Array.from(form.values()).find((value) => {
-          if (!(value instanceof Blob)) return false;
+        const file = Array.from(form.entries()).find(([field, value]) => {
+          if (!(value instanceof Blob) || value.size === 0) return false;
           const name = typeof value.name === "string" ? value.name : "";
-          return value.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(name);
-        });
+          return field === "images" || value.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|heic)$/i.test(name);
+        })?.[1];
         const text = [form.get("text"), form.get("title"), form.get("url")]
           .filter((value) => typeof value === "string" && value.trim())
           .join("\n").slice(0, 2000);
