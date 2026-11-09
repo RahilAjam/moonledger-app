@@ -63,6 +63,8 @@ let accountGreeting = "Your money, in view.";
 let accountDisplayName = "You";
 let stopExpenses;
 let expenseSyncError = "";
+let expenseWriteError = "";
+let pendingExpenseWrites = 0;
 let stopBudget;
 let stopChallenges;
 let stopChallengeMembers = [];
@@ -300,11 +302,11 @@ function greetingText(name = "") {
   const first = String(name || "").trim().split(/\s+/)[0];
   return first ? hello + ", " + first : hello;
 }
-function showSaveToast() {
+function showSaveToast(message = "✦ Nice, saved.") {
   let toast = $("saveToast");
   if (!toast) {
     toast = document.createElement("div"); toast.id = "saveToast"; toast.className = "save-toast"; toast.setAttribute("role", "status");
-    toast.innerHTML = '<span>✦ &nbsp;Nice, saved.</span><button type="button" aria-label="Undo saving this expense">Undo</button>';
+    toast.innerHTML = '<span></span><button type="button" aria-label="Undo saving this expense">Undo</button>';
     document.body.append(toast);
     toast.querySelector("button").onclick = async () => {
       if (!lastCreatedExpense) return;
@@ -316,6 +318,7 @@ function showSaveToast() {
       } catch (error) { toast.querySelector("span").textContent = "Could not undo · " + error.message; }
     };
   }
+  toast.querySelector("span").textContent = message;
   toast.hidden = false;
   clearTimeout(showSaveToast.timer); showSaveToast.timer = setTimeout(() => { toast.hidden = true; lastCreatedExpense = null; }, 5000);
   if (navigator.vibrate) navigator.vibrate(12);
@@ -710,10 +713,12 @@ function startSync() {
     expenseSyncError = "";
     render();
     syncChallengeSummary();
-    $("cloudStatus").textContent = !navigator.onLine || snapshot.metadata.fromCache
-      ? "Offline mode · changes will sync when you reconnect."
-      : "Synced to your private account.";
-    $("cloudStatus").hidden = guestMode || currentView === "Overview";
+    $("cloudStatus").textContent = expenseWriteError || (pendingExpenseWrites
+      ? "Saving to your account…"
+      : !navigator.onLine || snapshot.metadata.fromCache
+        ? "Offline mode · changes will sync when you reconnect."
+        : "Synced to your private account.");
+    $("cloudStatus").hidden = guestMode || (currentView === "Overview" && !expenseWriteError && !pendingExpenseWrites);
     $("accountCloudStatus").textContent = $("cloudStatus").textContent;
   }, (error) => {
     const message = "Couldn’t load expenses: " + error.message;
@@ -1352,43 +1357,96 @@ $("expenseForm").onsubmit = async (event) => {
     return;
   }
   const isEditing = Boolean(editingExpenseId);
+  const expenseId = editingExpenseId;
   const entryData = { amount, method, category: $("category").value, note: $("note").value.trim(), date: dateFromInput($("expenseDate").value) };
   saveButton.disabled = true;
   saveButton.textContent = "Saving…";
   formStatus.textContent = guestMode ? "Saving on this device…" : "Saving to your account…";
+  let createdId = null;
+  let pendingWrite = null;
+  let previousEntry = null;
   try {
-    let createdId = null;
     if (guestMode) {
-      if (editingExpenseId) expenses = expenses.map((entry) => entry.id === editingExpenseId ? { ...entry, ...entryData } : entry);
+      if (expenseId) expenses = expenses.map((entry) => entry.id === expenseId ? { ...entry, ...entryData } : entry);
       else expenses = [{ id: "guest_" + (crypto.randomUUID?.() || Date.now() + "_" + Math.random().toString(36).slice(2)), ...entryData }, ...expenses];
-      if (!editingExpenseId) createdId = expenses[0].id;
-      if (editingExpenseId) {
+      if (!expenseId) createdId = expenses[0].id;
+      if (expenseId) {
         const guestData = readGuestData();
-        guestData.syncedExpenseIds = guestData.syncedExpenseIds.filter((id) => id !== editingExpenseId);
+        guestData.syncedExpenseIds = guestData.syncedExpenseIds.filter((id) => id !== expenseId);
         writeGuestData(guestData);
       }
-      saveGuestExpenses(); render();
-    } else if (editingExpenseId) {
-      await updateDoc(doc(userCollection("expenses"), editingExpenseId), entryData);
-      expenses = expenses.map((entry) => entry.id === editingExpenseId ? { ...entry, ...entryData } : entry);
+      saveGuestExpenses();
+    } else if (expenseId) {
+      previousEntry = expenses.find((entry) => entry.id === expenseId) || null;
+      pendingWrite = updateDoc(doc(userCollection("expenses"), expenseId), entryData);
+      expenses = expenses.map((entry) => entry.id === expenseId ? { ...entry, ...entryData } : entry);
     } else {
-      const saved = await addDoc(userCollection("expenses"), entryData);
-      createdId = saved.id;
-      expenses = [{ id: saved.id, ...entryData }, ...expenses.filter((entry) => entry.id !== saved.id)];
+      const expenseRef = doc(userCollection("expenses"));
+      createdId = expenseRef.id;
+      pendingWrite = setDoc(expenseRef, entryData);
+      expenses = [{ id: expenseRef.id, ...entryData }, ...expenses.filter((entry) => entry.id !== expenseRef.id)];
     }
-    selectExpenseMonth(entryData.date);
-    render();
-    event.target.reset(); method = "UPI";
-    $("quickEntryText").value = "";
-    $("quickEntryStatus").textContent = "";
-    closeExpenseModal();
-    if (!isEditing && createdId) { lastCreatedExpense = { id: createdId, ...entryData }; showSaveToast(); }
   } catch (error) {
     formStatus.textContent = "Couldn’t save this expense: " + (error?.message || "Please check your connection and try again.");
     console.error("Expense save failed.", error);
-  } finally {
     saveButton.disabled = false;
-    saveButton.textContent = editingExpenseId ? "Save changes" : "Save expense";
+    saveButton.textContent = isEditing ? "Save changes" : "Save expense";
+    return;
+  } finally {
+    if ($("modal").classList.contains("open")) {
+      saveButton.disabled = false;
+      saveButton.textContent = isEditing ? "Save changes" : "Save expense";
+    }
+  }
+  // Firestore applies the write to its local view immediately. Close the sheet
+  // now instead of holding it open until a network round trip completes.
+  event.target.reset(); method = "UPI";
+  $("quickEntryText").value = "";
+  $("quickEntryStatus").textContent = "";
+  closeExpenseModal();
+  if (!isEditing && createdId) {
+    lastCreatedExpense = { id: createdId, ...entryData };
+    showSaveToast(guestMode ? "✦ Nice, saved on this device." : "✦ Saved · syncing to your account…");
+  }
+  try {
+    selectExpenseMonth(entryData.date);
+    render();
+  } catch (error) {
+    console.error("Expense saved, but the dashboard could not refresh.", error);
+  }
+  if (pendingWrite) {
+    pendingExpenseWrites += 1;
+    expenseWriteError = "";
+    $("cloudStatus").textContent = "Saving to your account…";
+    $("accountCloudStatus").textContent = "Saving to your account…";
+    $("cloudStatus").hidden = currentView === "Overview" ? false : guestMode;
+    void pendingWrite.then(() => {
+      pendingExpenseWrites = Math.max(0, pendingExpenseWrites - 1);
+      if (!pendingExpenseWrites) {
+        expenseWriteError = "";
+        $("cloudStatus").textContent = "Synced to your private account.";
+        $("accountCloudStatus").textContent = "Synced to your private account.";
+        $("cloudStatus").hidden = guestMode || currentView === "Overview";
+      }
+    }).catch((error) => {
+      pendingExpenseWrites = Math.max(0, pendingExpenseWrites - 1);
+      if (createdId) expenses = expenses.filter((entry) => entry.id !== createdId);
+      else if (previousEntry) expenses = expenses.map((entry) => entry.id === expenseId ? previousEntry : entry);
+      expenseWriteError = "Couldn’t sync that expense: " + (error?.message || "Check your connection and try again.");
+      $("cloudStatus").textContent = expenseWriteError;
+      $("accountCloudStatus").textContent = expenseWriteError;
+      $("cloudStatus").hidden = false;
+      $("cloudStatus").setAttribute("role", "alert");
+      if (createdId && lastCreatedExpense?.id === createdId) {
+        lastCreatedExpense = null;
+        const toast = $("saveToast");
+        if (toast) { toast.querySelector("span").textContent = "Couldn’t sync · check the message above."; toast.querySelector("button").hidden = true; }
+        if ($("quickEntryText")) $("quickEntryText").value = entryData.amount + (entryData.note ? " " + entryData.note : "");
+        if ($("quickEntryStatus")) $("quickEntryStatus").textContent = "Your unsynced draft was restored. Fix the connection, then tap Fill details to try again.";
+      }
+      render();
+      console.error("Expense write failed.", error);
+    });
   }
 };
 
@@ -1701,14 +1759,14 @@ function setView(view) {
   $("accountView").hidden = !isAccount;
   $("addBtn").hidden = isAccount || isOverview;
   $("main").classList.toggle("home-page", isOverview);
-  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError);
-  if (expenseSyncError) $("cloudStatus").textContent = expenseSyncError;
+  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError && !expenseWriteError);
+  if (expenseSyncError || expenseWriteError) $("cloudStatus").textContent = expenseWriteError || expenseSyncError;
   $("today").hidden = !isOverview;
   $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? accountDisplayName : view;
   $("monthSelect").hidden = isAccount;
   $("greeting").nextElementSibling.textContent = isOverview ? "Track · Spend · Save · Together" : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
-  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError);
+  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError && !expenseWriteError);
   if ($("accountCloudStatus") && guestMode) $("accountCloudStatus").textContent = "Not syncing · guest mode";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
