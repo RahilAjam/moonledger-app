@@ -1318,10 +1318,23 @@ document.querySelectorAll("[data-expense-filter]").forEach((button) => button.on
 
 $("expenseForm").onsubmit = async (event) => {
   event.preventDefault();
-  if (!user && !guestMode) return;
+  const formStatus = $("expenseFormStatus") || $("expenseForm").querySelector("p");
+  if (!user && !guestMode) {
+    formStatus.textContent = "You’re not signed in. Sign in or choose guest mode before saving this expense.";
+    return;
+  }
+  const saveButton = $("saveExpenseBtn");
+  if (saveButton.disabled) return;
   const amount = Number($("amount").value);
-  if (!amount || amount <= 0 || !$("expenseDate").value) return;
+  if (!amount || amount <= 0 || !$("expenseDate").value) {
+    formStatus.textContent = "Enter an amount and date to save this expense.";
+    return;
+  }
+  const isEditing = Boolean(editingExpenseId);
   const entryData = { amount, method, category: $("category").value, note: $("note").value.trim(), date: dateFromInput($("expenseDate").value) };
+  saveButton.disabled = true;
+  saveButton.textContent = "Saving…";
+  formStatus.textContent = guestMode ? "Saving on this device…" : "Saving to your account…";
   try {
     let createdId = null;
     if (guestMode) {
@@ -1341,8 +1354,14 @@ $("expenseForm").onsubmit = async (event) => {
     }
     event.target.reset(); method = "UPI";
     closeExpenseModal();
-    if (!editingExpenseId && createdId) { lastCreatedExpense = { id: createdId, ...entryData }; showSaveToast(); }
-  } catch (error) { alert("This expense could not be saved. Your current details are still in the form. " + error.message); }
+    if (!isEditing && createdId) { lastCreatedExpense = { id: createdId, ...entryData }; showSaveToast(); }
+  } catch (error) {
+    formStatus.textContent = "Couldn’t save this expense: " + (error?.message || "Please check your connection and try again.");
+    console.error("Expense save failed.", error);
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = editingExpenseId ? "Save changes" : "Save expense";
+  }
 };
 
 function openBudgetModal() {
