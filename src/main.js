@@ -1398,37 +1398,18 @@ $("expenseForm").onsubmit = async (event) => {
       saveButton.textContent = isEditing ? "Save changes" : "Save expense";
     }
   }
-  // Firestore applies the write to its local view immediately. Close the sheet
-  // now instead of holding it open until a network round trip completes.
-  event.target.reset(); method = "UPI";
-  $("quickEntryText").value = "";
-  $("quickEntryStatus").textContent = "";
-  closeExpenseModal();
-  if (!isEditing && createdId) {
-    lastCreatedExpense = { id: createdId, ...entryData };
-    showSaveToast(guestMode ? "✦ Nice, saved on this device." : "✦ Saved · syncing to your account…");
-  }
-  try {
-    selectExpenseMonth(entryData.date);
-    render();
-  } catch (error) {
-    console.error("Expense saved, but the dashboard could not refresh.", error);
-  }
+  // Do not clear the draft or close the form until Firestore confirms the write.
+  // The local snapshot can show optimistic data before the backend accepts it;
+  // treating that as saved made entries disappear on refresh after a rejection.
   if (pendingWrite) {
     pendingExpenseWrites += 1;
     expenseWriteError = "";
     $("cloudStatus").textContent = "Saving to your account…";
     $("accountCloudStatus").textContent = "Saving to your account…";
     $("cloudStatus").hidden = currentView === "Overview" ? false : guestMode;
-    void pendingWrite.then(() => {
-      pendingExpenseWrites = Math.max(0, pendingExpenseWrites - 1);
-      if (!pendingExpenseWrites) {
-        expenseWriteError = "";
-        $("cloudStatus").textContent = "Synced to your private account.";
-        $("accountCloudStatus").textContent = "Synced to your private account.";
-        $("cloudStatus").hidden = guestMode || currentView === "Overview";
-      }
-    }).catch((error) => {
+    try {
+      await pendingWrite;
+    } catch (error) {
       pendingExpenseWrites = Math.max(0, pendingExpenseWrites - 1);
       if (createdId) expenses = expenses.filter((entry) => entry.id !== createdId);
       else if (previousEntry) expenses = expenses.map((entry) => entry.id === expenseId ? previousEntry : entry);
@@ -1437,16 +1418,35 @@ $("expenseForm").onsubmit = async (event) => {
       $("accountCloudStatus").textContent = expenseWriteError;
       $("cloudStatus").hidden = false;
       $("cloudStatus").setAttribute("role", "alert");
-      if (createdId && lastCreatedExpense?.id === createdId) {
-        lastCreatedExpense = null;
-        const toast = $("saveToast");
-        if (toast) { toast.querySelector("span").textContent = "Couldn’t sync · check the message above."; toast.querySelector("button").hidden = true; }
-        if ($("quickEntryText")) $("quickEntryText").value = entryData.amount + (entryData.note ? " " + entryData.note : "");
-        if ($("quickEntryStatus")) $("quickEntryStatus").textContent = "Your unsynced draft was restored. Fix the connection, then tap Fill details to try again.";
-      }
-      render();
+      formStatus.textContent = expenseWriteError + " Your details are still in the form; retry when connected.";
+      saveButton.disabled = false;
+      saveButton.textContent = isEditing ? "Save changes" : "Save expense";
+      try { render(); } catch (renderError) { console.error("Expense save failed and the screen could not refresh.", renderError); }
       console.error("Expense write failed.", error);
-    });
+      return;
+    }
+    pendingExpenseWrites = Math.max(0, pendingExpenseWrites - 1);
+    if (!pendingExpenseWrites) {
+      expenseWriteError = "";
+      $("cloudStatus").textContent = "Synced to your private account.";
+      $("accountCloudStatus").textContent = "Synced to your private account.";
+      $("cloudStatus").hidden = guestMode || currentView === "Overview";
+    }
+  }
+  // The cloud has acknowledged the write, so it is safe to clear the draft.
+  event.target.reset(); method = "UPI";
+  $("quickEntryText").value = "";
+  $("quickEntryStatus").textContent = "";
+  closeExpenseModal();
+  if (!isEditing && createdId) {
+    lastCreatedExpense = { id: createdId, ...entryData };
+    showSaveToast(guestMode ? "✦ Nice, saved on this device." : "✦ Nice, saved to your account.");
+  }
+  try {
+    selectExpenseMonth(entryData.date);
+    render();
+  } catch (error) {
+    console.error("Expense saved, but the dashboard could not refresh.", error);
   }
 };
 
