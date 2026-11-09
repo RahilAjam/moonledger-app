@@ -1353,6 +1353,8 @@ $("expenseForm").onsubmit = async (event) => {
       const saved = await addDoc(userCollection("expenses"), entryData); createdId = saved.id;
     }
     event.target.reset(); method = "UPI";
+    $("quickEntryText").value = "";
+    $("quickEntryStatus").textContent = "";
     closeExpenseModal();
     if (!isEditing && createdId) { lastCreatedExpense = { id: createdId, ...entryData }; showSaveToast(); }
   } catch (error) {

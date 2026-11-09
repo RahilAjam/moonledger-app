@@ -39,6 +39,16 @@ test("users can only read and write their own expenses", async () => {
   await assertFails(setDoc(doc(mine, "users/alice"), { plan: "owner" }));
 });
 
+test("a signed-in Google user can save their own expense with a non-Gmail address", async () => {
+  const ownAccount = signedIn("campus-user", { email: "student@acharya.ac.in" });
+  await assertSucceeds(setDoc(doc(ownAccount, "users/campus-user/expenses/one"), {
+    amount: 32, method: "UPI", category: "Other", note: "Tea", date: "2026-11-09"
+  }));
+  await assertFails(setDoc(doc(ownAccount, "users/another-user/expenses/one"), {
+    amount: 32, method: "UPI", category: "Other", note: "Tea", date: "2026-11-09"
+  }));
+});
+
 test("a free user can create a savings circle", async () => {
   const db = signedIn("circle-owner");
   const batch = writeBatch(db);
