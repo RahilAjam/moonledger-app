@@ -14,6 +14,7 @@
     "plan:revoke": "node scripts/revoke.js"
   },
   "dependencies": {
+    "@paddleocr/paddleocr-js": "^0.4.2",
     "firebase": "^12.19.0",
     "tesseract.js": "^7.0.0"
   },

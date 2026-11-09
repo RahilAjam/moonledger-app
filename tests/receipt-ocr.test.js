@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parsePaymentScreenshotText } from "../src/receipt-ocr.js";
+import { parsePaymentScreenshotText, sortOcrItems } from "../src/receipt-ocr.js";
+
+test("orders screenshot OCR boxes top-to-bottom and left-to-right", () => {
+  const box = (x, y, text) => ({ text, score: 0.9, poly: [
+    { x, y }, { x: x + 20, y }, { x: x + 20, y: y + 10 }, { x, y: y + 10 }
+  ] });
+  const lines = sortOcrItems([
+    box(180, 50, "right"), box(10, 51, "left"), box(12, 12, "top"), box(5, 100, "bottom")
+  ]);
+  assert.deepEqual(lines.map((line) => line.text), ["top", "left", "right", "bottom"]);
+});
 
 test("extracts UPI amount, merchant, category and date from OCR text", () => {
   const parsed = parsePaymentScreenshotText("Payment successful\nPaid to Swiggy\n₹ 250.00\n07/11/2026");

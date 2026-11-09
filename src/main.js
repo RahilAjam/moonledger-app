@@ -1189,7 +1189,10 @@ async function processPaymentScreenshot(file, status) {
   try {
     const parsed = await readPaymentScreenshot(file, (progress) => {
       if (typeof progress === "number") status.textContent = "Reading screenshot on this device · " + progress + "%";
-      else if (progress?.status === "recognizing text") status.textContent = "Reading screenshot on this device · " + progress.progress + "%";
+      else if (progress?.status === "loading-model") status.textContent = "Preparing the on-device receipt reader… First use downloads its model and runtime.";
+      else if (progress?.status === "recognizing text" && Number.isFinite(progress.progress)) status.textContent = "Reading screenshot on this device · " + progress.progress + "%";
+      else if (progress?.status === "recognizing text") status.textContent = "Scanning the whole receipt on this device…";
+      else if (progress?.status === "fallback") status.textContent = "Checking the screenshot once more with a backup reader…";
       else if (/language|traineddata/i.test(progress?.status || "")) status.textContent = "Preparing the receipt reader…";
       else status.textContent = "Opening the on-device receipt reader…";
     });

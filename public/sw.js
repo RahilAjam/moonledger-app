@@ -27,7 +27,7 @@ self.addEventListener("notificationclick", (event) => {
   }));
 });
 
-const CACHE = "moonledger-shell-v23";
+const CACHE = "moonledger-shell-v24";
 const SHARE_DB = "moonledger-share-inbox-v1";
 
 function saveSharedPayload(payload) {

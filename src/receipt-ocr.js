@@ -1,5 +1,7 @@
 import { parseExpenseText } from "./feature-tools.js";
 
+let paddleOcrPromise = null;
+
 function parseSharedDate(text) {
   const source = String(text);
   const named = source.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b/i)
@@ -125,31 +127,101 @@ export function parsePaymentScreenshotText(text) {
   };
 }
 
-export async function readPaymentScreenshot(file, onProgress = () => {}) {
+async function normalizeScreenshot(file) {
   if (!(file instanceof Blob)) throw new Error("Share a payment screenshot in PNG, JPG, or WebP format.");
   if (file.size > 12 * 1024 * 1024) throw new Error("That image is too large. Share a screenshot under 12 MB.");
+  if (file.type.startsWith("image/")) return file;
+  // Some Android share providers label a valid JPEG as application/octet-stream.
+  const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const isPng = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47;
+  const isJpeg = header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  const isWebp = String.fromCharCode(...header.slice(0, 4)) === "RIFF" && String.fromCharCode(...header.slice(8, 12)) === "WEBP";
+  if (!isPng && !isJpeg && !isWebp) throw new Error("The shared file isn’t a readable image. Try sharing the receipt image itself.");
+  return new Blob([file], { type: isPng ? "image/png" : isWebp ? "image/webp" : "image/jpeg" });
+}
+
+export function sortOcrItems(items = []) {
+  const lines = items.filter((item) => item?.text?.trim() && Number(item.score) >= 0.15).map((item) => {
+    const points = Array.isArray(item.poly) ? item.poly : [];
+    const ys = points.map((point) => point.y);
+    const xs = points.map((point) => point.x);
+    return {
+      text: item.text.trim(),
+      score: Number(item.score) || 0,
+      x: xs.length ? xs.reduce((sum, value) => sum + value, 0) / xs.length : 0,
+      y: ys.length ? ys.reduce((sum, value) => sum + value, 0) / ys.length : 0,
+      height: ys.length ? Math.max(...ys) - Math.min(...ys) : 0
+    };
+  }).sort((a, b) => a.y - b.y || a.x - b.x);
+
+  // OCR returns detected boxes, which may not be in reading order. Cluster
+  // lines by vertical position first, then sort each row left to right. This
+  // avoids the non-transitive comparator that can scramble tall receipts.
+  const rows = [];
+  for (const line of lines) {
+    let row = rows.find((candidate) => {
+      const tolerance = Math.max(7, Math.min(24, Math.max(line.height, candidate.maxHeight) * 0.45));
+      return Math.abs(candidate.centerY - line.y) <= tolerance;
+    });
+    if (!row) {
+      row = { lines: [], centerY: line.y, maxHeight: line.height };
+      rows.push(row);
+    }
+    row.lines.push(line);
+    row.centerY = row.lines.reduce((sum, item) => sum + item.y, 0) / row.lines.length;
+    row.maxHeight = Math.max(row.maxHeight, line.height);
+  }
+  return rows.sort((a, b) => a.centerY - b.centerY)
+    .flatMap((row) => row.lines.sort((a, b) => a.x - b.x).map((line) => line));
+}
+
+function hasConfidentAmountLine(items, amount) {
+  return items.some((item) => {
+    const matches = item.text.matchAll(/(?:₹|INR\s*|Rs\.?\s*)?\s*([0-9]{1,6}(?:,[0-9]{3})*(?:\.\d{1,2})?)/gi);
+    return [...matches].some((match) => Number(match[1].replaceAll(",", "")) === Number(amount)) && item.score >= 0.3;
+  });
+}
+
+async function getPaddleOcr(onProgress) {
+  if (!paddleOcrPromise) {
+    onProgress({ status: "loading-model", progress: null });
+    paddleOcrPromise = import("@paddleocr/paddleocr-js").then(({ PaddleOCR }) => PaddleOCR.create({
+      textDetectionModelName: "PP-OCRv6_tiny_det",
+      textRecognitionModelName: "PP-OCRv6_tiny_rec",
+      worker: true,
+      ortOptions: { backend: "auto", numThreads: 2, simd: true }
+    })).catch((error) => {
+      paddleOcrPromise = null;
+      throw error;
+    });
+  }
+  return paddleOcrPromise;
+}
+
+async function readWithPaddle(image, onProgress) {
+  const reader = await getPaddleOcr(onProgress);
+  onProgress({ status: "recognizing text", progress: null });
+  const [result] = await reader.predict(image, { textDetLimitSideLen: 1600, textDetLimitType: "max", textRecScoreThresh: 0.2 });
+  const items = sortOcrItems(result?.items || []);
+  const text = items.map((item) => item.text).join("\n");
+  const parsed = parsePaymentScreenshotText(text);
+  // Only trust a clearly labeled/currency amount that the OCR model itself
+  // read with reasonable confidence. Ambiguous receipts go through the backup.
+  if (!parsed || parsed.confidence < 8 || !hasConfidentAmountLine(items, parsed.amount)) return null;
+  const amountLine = items.find((item) => hasConfidentAmountLine([item], parsed.amount));
+  return { ...parsed, confidence: Math.round(amountLine.score * 100), text };
+}
+
+async function readWithTesseract(image, onProgress) {
   const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng", 1, { logger: (event) => {
     if (event.status === "recognizing text") onProgress({ status: event.status, progress: Math.round((event.progress || 0) * 100) });
     else onProgress({ status: event.status, progress: null });
   } });
   try {
-    // Verify the actual image signature too. Some Android share providers
-    // label a valid JPEG as application/octet-stream.
-    let image = file;
-    if (!file.type.startsWith("image/")) {
-      const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
-      const isPng = header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4e && header[3] === 0x47;
-      const isJpeg = header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
-      const isWebp = String.fromCharCode(...header.slice(0, 4)) === "RIFF" && String.fromCharCode(...header.slice(8, 12)) === "WEBP";
-      if (!isPng && !isJpeg && !isWebp) throw new Error("The shared file isn’t a readable image. Try sharing the receipt image itself.");
-      image = new Blob([file], { type: isPng ? "image/png" : isWebp ? "image/webp" : "image/jpeg" });
-    }
-
-    // Read the whole receipt and focused, enlarged regions. Full-page OCR
-    // preserves context for separating the payment amount from IDs; enlarged
-    // header regions help on tall Android UPI receipts where text is tiny.
-    let fullImages = [file];
+    // Keep Tesseract as a fallback for screenshots the small model reads with
+    // low confidence. Its multiple image passes are slower but can rescue edge cases.
+    let fullImages = [image];
     if (typeof createImageBitmap === "function" && typeof document !== "undefined") {
       const bitmap = await createImageBitmap(image);
       const scale = Math.min(1.7, 3200 / Math.max(bitmap.width, bitmap.height));
@@ -164,9 +236,6 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
       };
       const enhanced = makeCanvas("grayscale(1) contrast(1.65) brightness(1.12)");
       const thresholded = makeCanvas("grayscale(1) contrast(3) brightness(1.2)");
-      // A hard black/white version often helps OCR on white receipt text over
-      // dark UPI screens. Keep the original and enhanced forms for logo/color
-      // layouts where thresholding can erase useful strokes.
       const thresholdContext = thresholded.getContext("2d", { willReadFrequently: true });
       const pixels = thresholdContext.getImageData(0, 0, thresholded.width, thresholded.height);
       for (let i = 0; i < pixels.data.length; i += 4) {
@@ -191,23 +260,16 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
     const passDetails = reads.map(parsePaymentScreenshotText).filter(Boolean);
     const combined = parsePaymentScreenshotText(recognizedText);
     if (!passDetails.length && !combined) return null;
-
-    // Prefer an amount repeated by independent passes. A single explicit
-    // currency amount is also safe; conflicting equally strong reads are not.
     const groups = new Map();
     for (const detail of passDetails) {
       const group = groups.get(detail.amount) || { amount: detail.amount, count: 0, score: 0, detail };
-      group.count += 1;
-      group.score += detail.confidence;
+      group.count += 1; group.score += detail.confidence;
       if (detail.confidence > group.detail.confidence) group.detail = detail;
       groups.set(detail.amount, group);
     }
     const ranked = [...groups.values()].sort((a, b) => b.count - a.count || b.score - a.score);
     let chosen = ranked[0];
     if (ranked.length > 1 && ranked[0].count === ranked[1].count && ranked[0].score - ranked[1].score < 4) return null;
-    // If OCR drops only the currency glyph, accept a short standalone number
-    // from a full-image pass when the same whole image independently contains
-    // the payment confirmation context. Long dates and IDs are never eligible.
     const confirmedPayment = /(?:paid\s+to|sent\s+to|transferred\s+to|payment\s+(?:successful|complete|completed)|successfully\s+(?:paid|sent))/i.test(recognizedText);
     const hasStandaloneAmount = reads.some((read) => read.split(/\r?\n/).some((line) => /^(?:₹|INR|Rs\.?|R)?\s*[0-9]{1,6}(?:\.\d{1,2})?\s*$/i.test(line.trim())));
     if (chosen && chosen.count === 1 && chosen.score < 8 && !(confirmedPayment && hasStandaloneAmount && chosen.score >= 3)) return null;
@@ -220,4 +282,18 @@ export async function readPaymentScreenshot(file, onProgress = () => {}) {
   } finally {
     await worker.terminate();
   }
+}
+
+export async function readPaymentScreenshot(file, onProgress = () => {}) {
+  const image = await normalizeScreenshot(file);
+  try {
+    const parsed = await readWithPaddle(image, onProgress);
+    if (parsed) return parsed;
+  } catch (error) {
+    // Network/model initialization and device support vary. Keep screenshot
+    // import usable by falling back to the existing local Tesseract pipeline.
+    console.warn("PaddleOCR could not read this screenshot; trying the backup reader.", error);
+  }
+  onProgress({ status: "fallback", progress: null });
+  return readWithTesseract(image, onProgress);
 }
