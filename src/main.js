@@ -62,6 +62,7 @@ let lastCreatedExpense = null;
 let accountGreeting = "Your money, in view.";
 let accountDisplayName = "You";
 let stopExpenses;
+let expenseSyncError = "";
 let stopBudget;
 let stopChallenges;
 let stopChallengeMembers = [];
@@ -706,13 +707,22 @@ function startSync() {
   const expensesQuery = query(userCollection("expenses"), orderBy("date", "desc"));
   stopExpenses = onSnapshot(expensesQuery, (snapshot) => {
     expenses = snapshot.docs.map((entry) => Object.assign({ id: entry.id }, entry.data()));
+    expenseSyncError = "";
     render();
     syncChallengeSummary();
     $("cloudStatus").textContent = !navigator.onLine || snapshot.metadata.fromCache
       ? "Offline mode · changes will sync when you reconnect."
       : "Synced to your private account.";
+    $("cloudStatus").hidden = guestMode || currentView === "Overview";
     $("accountCloudStatus").textContent = $("cloudStatus").textContent;
-  }, (error) => { $("cloudStatus").textContent = "Couldn’t load expenses: " + error.message; $("accountCloudStatus").textContent = $("cloudStatus").textContent; });
+  }, (error) => {
+    const message = "Couldn’t load expenses: " + error.message;
+    expenseSyncError = message;
+    $("cloudStatus").textContent = message;
+    $("cloudStatus").hidden = false;
+    $("cloudStatus").setAttribute("role", "alert");
+    $("accountCloudStatus").textContent = message;
+  });
   watchBudget(monthSelect.value);
   for (const [name, setter] of [["recurring", (rows) => recurringItems = rows], ["debts", (rows) => debtItems = rows], ["noSpendDays", (rows) => noSpendDates = rows.map((row) => row.date)]]) {
     stopTools.push(onSnapshot(userCollection(name), (snapshot) => {
@@ -833,7 +843,12 @@ function renderQuickAdds() {
         if (guestMode) {
           expenses = [{ id: "guest_" + (crypto.randomUUID?.() || Date.now() + "_" + Math.random().toString(36).slice(2)), ...data }, ...expenses];
           saveGuestExpenses(); render();
-        } else if (user) await addDoc(userCollection("expenses"), data);
+        } else if (user) {
+          const saved = await addDoc(userCollection("expenses"), data);
+          expenses = [{ id: saved.id, ...data }, ...expenses.filter((item) => item.id !== saved.id)];
+          selectExpenseMonth(data.date);
+          render();
+        } else throw new Error("Sign in or choose guest mode before saving.");
         $("quickEntryStatus").textContent = "Added " + entry.note + " · " + money(entry.amount) + ".";
       } catch (error) {
         $("quickEntryStatus").textContent = "Could not add that spend: " + error.message;
@@ -957,6 +972,12 @@ function renderContent() {
 }
 
 function render() { renderContent(); updateBudget(); syncChallengeSummary(); renderLeaderboard(); renderTools(); renderInsights(); }
+function selectExpenseMonth(date) {
+  const month = localDateKey(date).slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(month) || monthSelect.value === month) return;
+  monthSelect.value = month;
+  if (user) watchBudget(month);
+}
 function updateBudget() {
   if (!monthSelect.value) return;
   const month = monthSelect.value;
@@ -1349,9 +1370,14 @@ $("expenseForm").onsubmit = async (event) => {
       saveGuestExpenses(); render();
     } else if (editingExpenseId) {
       await updateDoc(doc(userCollection("expenses"), editingExpenseId), entryData);
+      expenses = expenses.map((entry) => entry.id === editingExpenseId ? { ...entry, ...entryData } : entry);
     } else {
-      const saved = await addDoc(userCollection("expenses"), entryData); createdId = saved.id;
+      const saved = await addDoc(userCollection("expenses"), entryData);
+      createdId = saved.id;
+      expenses = [{ id: saved.id, ...entryData }, ...expenses.filter((entry) => entry.id !== saved.id)];
     }
+    selectExpenseMonth(entryData.date);
+    render();
     event.target.reset(); method = "UPI";
     $("quickEntryText").value = "";
     $("quickEntryStatus").textContent = "";
@@ -1675,13 +1701,14 @@ function setView(view) {
   $("accountView").hidden = !isAccount;
   $("addBtn").hidden = isAccount || isOverview;
   $("main").classList.toggle("home-page", isOverview);
-  $("cloudStatus").hidden = guestMode || isOverview;
+  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError);
+  if (expenseSyncError) $("cloudStatus").textContent = expenseSyncError;
   $("today").hidden = !isOverview;
   $("greeting").textContent = isOverview ? accountGreeting : view === "Monthly reports" ? "Your month, at a glance." : isAccount ? accountDisplayName : view;
   $("monthSelect").hidden = isAccount;
   $("greeting").nextElementSibling.textContent = isOverview ? "Track · Spend · Save · Together" : isExpenses ? "Every spend, in one place." : isReports ? "Your patterns, without the spreadsheet." : "Private to your signed-in Google account.";
   if (guestMode && isAccount) $("greeting").nextElementSibling.textContent = "Guest entries stay in this browser.";
-  $("cloudStatus").hidden = guestMode || isOverview;
+  $("cloudStatus").hidden = guestMode || (isOverview && !expenseSyncError);
   if ($("accountCloudStatus") && guestMode) $("accountCloudStatus").textContent = "Not syncing · guest mode";
   $("expenseSection").classList.toggle("expenses-view", isExpenses);
   $("expenseSection").classList.toggle("reports-view", isReports);
