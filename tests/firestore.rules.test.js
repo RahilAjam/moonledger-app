@@ -102,7 +102,7 @@ test("an expired plan claim does not disable features that are free for everyone
     await setDoc(doc(db, "users/expired-user/circleAccess/freeSlot"), { circleId: "circle", createdAt: "2026-11-07" });
   });
   const expired = signedIn("expired-user", { plan: "owner", planUntil: Date.now() - 1000 });
-  await assertSucceeds(setDoc(doc(expired, "challenges/circle/splits/free-access"), {
+  await assertSucceeds(setDoc(doc(expired, "challenges/circle/splits/expired-free-access"), {
     title: "Dinner", total: 900, participantCount: 3, createdBy: "expired-user", createdByName: "Expired", createdAt: "2026-11-07"
   }));
 });

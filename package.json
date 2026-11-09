@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test tests/plan-archive.test.js tests/receipt-ocr.test.js tests/share-target.test.js",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-moonledger \"node --test tests/firestore.rules.test.js\"",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-moonledger \"node --test --test-concurrency=1 tests/firestore.rules.test.js\"",
     "plan:grant": "node scripts/grant.js",
     "plan:grant-first-333": "node scripts/grant-first-333.js",
     "plan:revoke": "node scripts/revoke.js"
