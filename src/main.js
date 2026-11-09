@@ -1227,7 +1227,12 @@ async function openSharedTextIfPresent() {
       }
       sessionStorage.removeItem(pendingShareKey);
       if (payload?.text) sharedText = payload.text;
-      else $("quickEntryStatus").textContent = "The share did not include an image. Try Upload screenshot, or share the receipt as an image.";
+      else {
+        $("quickEntryStatus").textContent = "The share did not include an image. Try Upload screenshot, or share the receipt as an image.";
+        openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+        $("expenseModalTitle").textContent = "Receipt image didn’t arrive";
+        $("expenseForm").querySelector("p").textContent = "Moonledger opened from the share, but the image was missing. You can still enter the amount or choose Upload screenshot from Home.";
+      }
     }
     if (!sharedText) return;
     const parsed = parsePaymentScreenshotText(sharedText);
@@ -1244,6 +1249,9 @@ async function openSharedTextIfPresent() {
   } catch (error) {
     $("quickEntryStatus").textContent = "Couldn’t open the shared screenshot. Try sharing it again or use Upload screenshot.";
     console.warn("Shared payment could not be read.", error);
+    openExpenseModal({ method: "UPI", date: new Date().toISOString() });
+    $("expenseModalTitle").textContent = "Review shared payment";
+    $("expenseForm").querySelector("p").textContent = "Moonledger received the share but couldn’t open its image. Please enter the amount from the receipt.";
   } finally {
     sharedPayloadOpening = false;
   }
@@ -1729,5 +1737,5 @@ getRedirectResult(auth).catch((error) => {
 window.addEventListener("online", () => { if (user) { $("cloudStatus").textContent = "Back online · syncing your changes."; $("accountCloudStatus").textContent = $("cloudStatus").textContent; } });
 window.addEventListener("offline", () => { if (user) { $("cloudStatus").textContent = "Offline mode · changes will sync when you reconnect."; $("accountCloudStatus").textContent = $("cloudStatus").textContent; } });
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
-  navigator.serviceWorker.register("/sw.js").catch((error) => console.warn("Offline app shell could not be registered.", error));
+  navigator.serviceWorker.register("/sw.js").then((registration) => registration.update()).catch((error) => console.warn("Offline app shell could not be registered.", error));
 }
